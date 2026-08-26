@@ -17,6 +17,7 @@ from .errors import FireRedAudioT8Error, TaskCancelledError
 from .model_manager import validate_model_dir
 from .runtime import FireRedAudioRuntime
 from .audio_quality import analyze_audio
+from .production_quality import analyze_production_audio, text_diff_metrics
 from .system_info import runtime_readiness
 
 logger = logging.getLogger("fireredaudio_t8.worker")
@@ -78,6 +79,21 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                 result = runtime_readiness()
             elif route == "/v1/audio/analyze":
                 result = analyze_audio(payload["audio_path"])
+            elif route == "/v1/audio/production-qa":
+                result = analyze_production_audio(
+                    payload["audio_path"],
+                    target_lufs=float(payload.get("target_lufs", -16.0)),
+                    tolerance_lu=float(payload.get("tolerance_lu", 2.0)),
+                    true_peak_ceiling_dbfs=float(
+                        payload.get("true_peak_ceiling_dbfs", -1.0)
+                    ),
+                )
+                if "reference_text" in payload or "hypothesis_text" in payload:
+                    result["transcript_comparison"] = text_diff_metrics(
+                        str(payload.get("reference_text") or ""),
+                        str(payload.get("hypothesis_text") or ""),
+                        language=str(payload.get("language") or "zh"),
+                    )
             elif route == "/v1/cache/status":
                 result = self.server.runtime.cache_status()
             elif route == "/v1/cache/cleanup":
@@ -88,6 +104,10 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                 )
             elif route == "/v1/task/cancel":
                 result = self.server.runtime.cancel(payload.get("task_id"))
+            elif route.startswith("/v1/project/"):
+                from .project_api import handle_project_request
+
+                result = handle_project_request(route, payload, runtime=self.server.runtime)
             elif route == "/shutdown":
                 result = {"shutting_down": True}
                 threading.Thread(target=self.server.shutdown, daemon=True).start()

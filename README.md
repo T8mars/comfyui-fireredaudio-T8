@@ -15,6 +15,12 @@ FireRedAudio 的 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点
 - 语义语音编辑
 - 严格模板和参数化两种音高、速度、音量声学编辑
 - 参考音频时长、响度、削波、静音、直流偏移质检
+- 可复用音色档案与 1–8 角色音色库
+- 载入桌面整合包导出的项目交换 JSON，复用音色库、脚本和 adopted take
+- SRT、`角色：台词`、带时间码角色脚本和 JSON 的解析与生成前预检
+- 逐条落盘、原子 manifest、内容指纹缓存和中断恢复的批量配音
+- 顺序、时间码定位和叠加三种时间线渲染，以及峰值/时间槽溢出报告
+- 成品逐条 ASR 回读、中文 CER/英文 WER、削波、静音和时长 QA
 - WAV、FLAC、MP3、OGG 音频与 SRT、VTT、TXT、JSONL 安全保存
 - 模型校验、真实 GPU/空闲显存报告、缓存清理、显存释放和 Worker 停止
 - ComfyUI V3 进度同步、中断联动取消、快速/均衡/高质量预设
@@ -83,6 +89,30 @@ python scripts/download_models.py --target "D:\ComfyUI\models\TTS\FireRedAudio" 
 示例见 `example_workflows/ui` 和 `example_workflows/api`。
 
 长音频字幕是静音感知的分段级近似时间，不是词级强制对齐。上游生成目前仅支持单样本，批量工作流应顺序执行，不能视为原生 GPU batch。
+
+## 配音生产工作流
+
+推荐连接顺序：
+
+```text
+Load Audio → 音色档案 ┐
+Load Audio → 音色档案 ├→ 音色库 → 角色脚本/SRT 预检 → 可恢复批量配音
+                       └───────────────────────────────┬→ 时间线渲染 → 保存音频
+模型/隔离运行时 ───────────────────────────────────────└→ 成品语音 QA
+```
+
+若脚本已在桌面整合包中整理，可点击“导出 ComfyUI 项目 JSON”，再用“FireRedAudio 桌面项目交换”节点一次还原 Voice Bank、Script Plan 和已采用的 Audio Batch。节点会验证参考音频 SHA-256；文件移动或被改写时会明确报错。
+
+角色脚本支持以下形式：
+
+```text
+旁白：欢迎收听本期节目。
+[00:00:03,000 --> 00:00:06,000] 小夏：大家好，我是小夏。
+```
+
+SRT 的正文可用 `[角色] 台词` 标记角色。JSON 可直接传数组，或传包含 `lines` 数组的对象；每项支持 `speaker`、`text`、`language`、`start_seconds`、`end_seconds`。
+
+批量配音输出到 `ComfyUI/output/<subfolder>/<project_name>/`。`manifest.json` 会在每条成功或失败后原子更新；启用恢复后，只有台词、音色参考、生成参数和模型身份指纹均一致且 WAV 仍存在的条目才会命中缓存。由于上游生成接口当前只支持 `batch_size=1`，此节点采用顺序 Worker 请求，以获得可中断、可诊断和可恢复的行为，并不宣称原生张量 batch 加速。
 
 ## 许可证与安全
 

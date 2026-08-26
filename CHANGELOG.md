@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- 新增音色档案、1–8 音色库，以及 SRT/角色脚本/JSON 解析预检节点。
+- 新增逐条原子 manifest、输入指纹缓存和中断恢复的批量配音节点；保持隔离 Worker 与 Transformers 兼容边界。
+- 新增 sequence、timeline、overlay 时间线渲染，以及峰值限制和时间槽溢出报告。
+- 新增基于 ASR 回读、中文 CER/英文 WER、削波、静音和时长的成品语音 QA。
+- 新增完整角色配音与 SRT 配音两组 UI/API 示例工作流。
+- 新增桌面项目交换节点，载入角色音色库、脚本计划与 adopted take。
+- Worker 同步声音设计退化门禁、分阶段性能证据与 Transformers 隔离兼容报告。
+
 ## 0.3.0
 
 - 新增长音频静音感知切段、重叠文本去重，以及 SRT、WebVTT、JSONL 输出。

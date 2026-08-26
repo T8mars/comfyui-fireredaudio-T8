@@ -69,6 +69,33 @@ class WorkerClient:
     def analyze_audio(self, audio_path: str) -> dict[str, Any]:
         return self.request("v1/audio/analyze", {"audio_path": audio_path}, timeout=120.0)
 
+    def production_qa(
+        self,
+        audio_path: str,
+        *,
+        target_lufs: float = -16.0,
+        tolerance_lu: float = 2.0,
+        true_peak_ceiling_dbfs: float = -1.0,
+        reference_text: str | None = None,
+        hypothesis_text: str | None = None,
+        language: str = "zh",
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "audio_path": audio_path,
+            "target_lufs": target_lufs,
+            "tolerance_lu": tolerance_lu,
+            "true_peak_ceiling_dbfs": true_peak_ceiling_dbfs,
+        }
+        if reference_text is not None or hypothesis_text is not None:
+            payload.update(
+                {
+                    "reference_text": reference_text or "",
+                    "hypothesis_text": hypothesis_text or "",
+                    "language": language,
+                }
+            )
+        return self.request("v1/audio/production-qa", payload, timeout=360.0)
+
     def cache_status(self) -> dict[str, Any]:
         return self.request("v1/cache/status", {})
 
@@ -78,3 +105,9 @@ class WorkerClient:
             {"clear_all": clear_all, "max_age_hours": 72.0, "max_size_mib": 2048.0},
             timeout=120.0,
         )
+
+    def project(self, action: str, payload: dict[str, Any], timeout: float = 120.0) -> dict[str, Any]:
+        safe_action = str(action or "").strip("/")
+        if not safe_action or any(part in {"", ".", ".."} for part in safe_action.split("/")):
+            raise WorkerProtocolError("项目 action 无效")
+        return self.request(f"v1/project/{safe_action}", payload, timeout=timeout)

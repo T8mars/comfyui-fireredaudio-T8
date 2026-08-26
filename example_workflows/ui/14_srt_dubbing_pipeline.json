@@ -1,0 +1,508 @@
+{
+  "last_node_id": 9,
+  "last_link_id": 9,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "T8_FireRedAudio_ModelLoader",
+      "pos": [
+        60,
+        80
+      ],
+      "size": [
+        370,
+        330
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "T8_FIREREDAUDIO_MODEL",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "model_info",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_ModelLoader"
+      },
+      "widgets_values": [
+        "FireRedAudio",
+        "",
+        "auto",
+        "auto",
+        "full",
+        "managed",
+        "",
+        "",
+        "",
+        false,
+        false
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LoadAudio",
+      "pos": [
+        60,
+        430
+      ],
+      "size": [
+        300,
+        170
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        "narrator_reference.wav",
+        null,
+        null
+      ]
+    },
+    {
+      "id": 3,
+      "type": "T8_FireRedAudio_VoiceProfile",
+      "pos": [
+        410,
+        400
+      ],
+      "size": [
+        390,
+        260
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "profile",
+          "type": "T8_FIREREDAUDIO_VOICE_PROFILE",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "profile_json",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_VoiceProfile"
+      },
+      "widgets_values": [
+        "旁白",
+        "这是旁白参考音频的逐字稿。",
+        "zh",
+        ""
+      ]
+    },
+    {
+      "id": 4,
+      "type": "T8_FireRedAudio_VoiceBank",
+      "pos": [
+        850,
+        420
+      ],
+      "size": [
+        350,
+        190
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "profile_0",
+          "type": "T8_FIREREDAUDIO_VOICE_PROFILE",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "voice_bank",
+          "type": "T8_FIREREDAUDIO_VOICE_BANK",
+          "links": [
+            4,
+            6
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "voice_bank_json",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_VoiceBank"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 5,
+      "type": "T8_FireRedAudio_ScriptParser",
+      "pos": [
+        1250,
+        350
+      ],
+      "size": [
+        430,
+        390
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "voice_bank",
+          "type": "T8_FIREREDAUDIO_VOICE_BANK",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "script_plan",
+          "type": "T8_FIREREDAUDIO_SCRIPT_PLAN",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "normalized_json",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "preflight_report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_ScriptParser"
+      },
+      "widgets_values": [
+        "1\n00:00:00,000 --> 00:00:02,500\n[旁白] 第一条字幕。\n\n2\n00:00:03,000 --> 00:00:05,500\n[旁白] 第二条字幕。",
+        "srt",
+        "旁白",
+        true
+      ]
+    },
+    {
+      "id": 6,
+      "type": "T8_FireRedAudio_GenerationSettings",
+      "pos": [
+        470,
+        70
+      ],
+      "size": [
+        320,
+        280
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "settings",
+          "type": "T8_FIREREDAUDIO_SETTINGS",
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_GenerationSettings"
+      },
+      "widgets_values": [
+        "balanced",
+        42,
+        750,
+        6,
+        512,
+        10,
+        2.0
+      ]
+    },
+    {
+      "id": 7,
+      "type": "T8_FireRedAudio_BatchDubbing",
+      "pos": [
+        1730,
+        300
+      ],
+      "size": [
+        430,
+        330
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "T8_FIREREDAUDIO_MODEL",
+          "link": 1
+        },
+        {
+          "name": "script_plan",
+          "type": "T8_FIREREDAUDIO_SCRIPT_PLAN",
+          "link": 5
+        },
+        {
+          "name": "voice_bank",
+          "type": "T8_FIREREDAUDIO_VOICE_BANK",
+          "link": 6
+        },
+        {
+          "name": "settings",
+          "type": "T8_FIREREDAUDIO_SETTINGS",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio_batch",
+          "type": "T8_FIREREDAUDIO_AUDIO_BATCH",
+          "links": [
+            8
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "manifest_path",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "batch_report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_BatchDubbing"
+      },
+      "widgets_values": [
+        "srt-demo",
+        "fireredaudio/projects",
+        true,
+        false
+      ]
+    },
+    {
+      "id": 8,
+      "type": "T8_FireRedAudio_TimelineRender",
+      "pos": [
+        2220,
+        330
+      ],
+      "size": [
+        390,
+        280
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio_batch",
+          "type": "T8_FIREREDAUDIO_AUDIO_BATCH",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            9
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "timeline_report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_TimelineRender"
+      },
+      "widgets_values": [
+        "timeline",
+        120,
+        "limit",
+        24000
+      ]
+    },
+    {
+      "id": 9,
+      "type": "T8_FireRedAudio_SaveAudio",
+      "pos": [
+        2670,
+        350
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "name": "saved_path",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_SaveAudio"
+      },
+      "widgets_values": [
+        "wav",
+        "srt-demo-mix",
+        "fireredaudio/renders"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      7,
+      0,
+      "T8_FIREREDAUDIO_MODEL"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      0,
+      "AUDIO"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      0,
+      "T8_FIREREDAUDIO_VOICE_PROFILE"
+    ],
+    [
+      4,
+      4,
+      0,
+      5,
+      0,
+      "T8_FIREREDAUDIO_VOICE_BANK"
+    ],
+    [
+      5,
+      5,
+      0,
+      7,
+      1,
+      "T8_FIREREDAUDIO_SCRIPT_PLAN"
+    ],
+    [
+      6,
+      4,
+      0,
+      7,
+      2,
+      "T8_FIREREDAUDIO_VOICE_BANK"
+    ],
+    [
+      7,
+      6,
+      0,
+      7,
+      3,
+      "T8_FIREREDAUDIO_SETTINGS"
+    ],
+    [
+      8,
+      7,
+      0,
+      8,
+      0,
+      "T8_FIREREDAUDIO_AUDIO_BATCH"
+    ],
+    [
+      9,
+      8,
+      0,
+      9,
+      0,
+      "AUDIO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9,
+      "offset": [
+        80,
+        80
+      ]
+    }
+  },
+  "version": 0.4
+}

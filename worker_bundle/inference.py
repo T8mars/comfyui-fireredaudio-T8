@@ -32,6 +32,7 @@ import argparse
 import gc
 import logging
 import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -223,6 +224,14 @@ class AudioOutput:
     text: str | None               # text between <|sot|> and <|eot|>, if any
     vae_latents: torch.Tensor      # (1, N, 64) 25 Hz latents that `audio` decodes from
     text_ids: torch.Tensor         # (1, M) all text tokens, including <|sosp|>/<|eosp|>
+    requested_seed: int | None = None
+    actual_seed: int | None = None
+    quality_retry_count: int = 0
+    quality_gate_reason: str | None = None
+
+
+class AudioGenerationQualityError(RuntimeError):
+    """Raised instead of returning a clearly runaway voice-design generation."""
 
 
 class _CallbackStoppingCriteria(StoppingCriteria):
@@ -349,8 +358,17 @@ class FireRedAudioInference:
         """Generation-side reference audio, padded to a multiple of the patch rate."""
         return pad_to_multiple_of(read_audio(path, GENERATION_SAMPLE_RATE))
 
-    def _run_audio_generation(self, task, input_chatml, input_audios,
-                              **gen_kwargs) -> AudioOutput:
+    def _run_audio_generation(
+        self,
+        task,
+        input_chatml,
+        input_audios,
+        quality_gate: Callable[[torch.Tensor], str | None] | None = None,
+        quality_retries: int = 0,
+        requested_seed: int | None = None,
+        defer_decode: bool = False,
+        **gen_kwargs,
+    ) -> AudioOutput:
         """Shared path for generation tasks: encode -> generate_tts -> VAE decode."""
         if self.vae_decoder is None:
             raise ValueError(
@@ -362,29 +380,87 @@ class FireRedAudioInference:
         self._progress_callback("input_encoding", 0.05, "正在读取并编码输入音频")
         batch = self.encoder.encode(input_chatml, input_audios)
         self._cancel_check()
-        text_ids, vae_latents = self.model.generate_tts(
-            input_ids=batch["input_ids"].to(self.device),
-            attention_mask=batch["attention_mask"].to(self.device),
-            vae_audios=batch["vae_audios"].to(self.device),
-            vae_is_assistant=batch["vae_is_assistant"].to(self.device),
-            patch_encoder_output_attention_mask=(
-                batch["patch_encoder_output_attention_mask"].to(self.device)
-            ),
-            generation_config=self._gen_config(task),
-            cancel_check=self._cancel_check,
-            progress_callback=self._progress_callback,
-            **gen_kwargs,
-        )
-        if vae_latents.shape[1] == 0:
-            # The model never entered audio mode. Passing this to the decoder would
-            # fail deep inside Qwen3 with "cannot reshape tensor of 0 elements".
-            raise RuntimeError(
-                f"task={task!r} produced no audio (0 AE latents). The model stopped "
-                f"after {text_ids.shape[1]} text tokens without emitting <|sosp|>. "
-                "max_new_text_tokens is most likely too small: voice_design first "
-                "writes a timbre description and edit(semantic) writes "
-                "<|sot|>{new text}<|eot|>, either of which can run to hundreds of tokens."
+        if quality_retries < 0:
+            raise ValueError("quality_retries must be >= 0")
+        quality_failures: list[str] = []
+        actual_seed = requested_seed
+        for attempt in range(quality_retries + 1):
+            if attempt > 0:
+                if requested_seed is None:
+                    raise RuntimeError("quality retry requires a requested seed")
+                actual_seed = (requested_seed + attempt) % (2 ** 63)
+                set_seed(actual_seed)
+                retry_progress = 0.08 + 0.8 * attempt / (quality_retries + 1)
+                self._progress_callback(
+                    "quality_retry",
+                    retry_progress,
+                    f"检测到上游生成退化，正在用 seed={actual_seed} 做第 {attempt} 次确定性重试",
+                )
+            generation_progress = self._progress_callback
+            if quality_gate is not None and quality_retries > 0:
+                last_raw_progress = 0.0
+
+                def generation_progress(phase, raw_progress, message):
+                    nonlocal last_raw_progress
+                    last_raw_progress = max(last_raw_progress, float(raw_progress))
+                    scaled = 0.08 + 0.8 * (
+                        attempt + min(1.0, last_raw_progress)
+                    ) / (quality_retries + 1)
+                    self._progress_callback(phase, min(0.88, scaled), message)
+
+            text_ids, vae_latents = self.model.generate_tts(
+                input_ids=batch["input_ids"].to(self.device),
+                attention_mask=batch["attention_mask"].to(self.device),
+                vae_audios=batch["vae_audios"].to(self.device),
+                vae_is_assistant=batch["vae_is_assistant"].to(self.device),
+                patch_encoder_output_attention_mask=(
+                    batch["patch_encoder_output_attention_mask"].to(self.device)
+                ),
+                generation_config=self._gen_config(task),
+                cancel_check=self._cancel_check,
+                progress_callback=generation_progress,
+                **gen_kwargs,
             )
+            if vae_latents.shape[1] == 0:
+                # The model never entered audio mode. Passing this to the decoder would
+                # fail deep inside Qwen3 with "cannot reshape tensor of 0 elements".
+                raise RuntimeError(
+                    f"task={task!r} produced no audio (0 AE latents). The model stopped "
+                    f"after {text_ids.shape[1]} text tokens without emitting <|sosp|>. "
+                    "max_new_text_tokens is most likely too small: voice_design first "
+                    "writes a timbre description and edit(semantic) writes "
+                    "<|sot|>{new text}<|eot|>, either of which can run to hundreds of tokens."
+                )
+            failure = quality_gate(vae_latents) if quality_gate is not None else None
+            if failure is None:
+                break
+            quality_failures.append(f"seed={actual_seed}: {failure}")
+        if quality_failures and len(quality_failures) > quality_retries:
+            raise AudioGenerationQualityError(
+                "Voice design produced a runaway audio span after "
+                f"{quality_retries + 1} deterministic attempt(s): "
+                + "; ".join(quality_failures)
+                + ". Try a more detailed voice description or choose another seed."
+            )
+        if defer_decode:
+            audio = torch.empty(0)
+            vae_latents = vae_latents.detach().cpu()
+        else:
+            audio = self._decode_audio_latents(vae_latents)
+        return AudioOutput(
+            audio=audio,
+            text=extract_sot_text(text_ids, self.tokenizer, self._sot_id, self._eot_id),
+            vae_latents=vae_latents,
+            text_ids=text_ids,
+            requested_seed=requested_seed,
+            actual_seed=actual_seed,
+            quality_retry_count=len(quality_failures),
+            quality_gate_reason="; ".join(quality_failures) or None,
+        )
+
+    def _decode_audio_latents(self, vae_latents: torch.Tensor) -> torch.Tensor:
+        if self.vae_decoder is None:
+            raise ValueError("audio decoding requires vae_decoder")
         if self.memory_mode == "sequential" and self.device.type == "cuda":
             self._progress_callback("decoder_transfer", 0.9, "正在切换到音频解码器")
             self._cancel_check()
@@ -403,15 +479,114 @@ class FireRedAudioInference:
             audio = self.vae_decoder.decode(vae_latents.cpu().float()).cpu()
         else:
             self._progress_callback("decode", 0.9, "正在解码波形")
-            audio = self.vae_decoder.decode(vae_latents.float())
+            audio = self.vae_decoder.decode(vae_latents.to(self.device).float()).cpu()
         self._cancel_check()
         self._progress_callback("decode", 0.97, "波形解码完成")
-        return AudioOutput(
-            audio=audio,
-            text=extract_sot_text(text_ids, self.tokenizer, self._sot_id, self._eot_id),
-            vae_latents=vae_latents,
-            text_ids=text_ids,
-        )
+        return audio
+
+    @torch.inference_mode()
+    def tts_batch(self, items: list[dict]) -> list[AudioOutput | Exception]:
+        """Generate a TTS batch while avoiding per-line model transfers in sequential mode.
+
+        The autoregressive/Flow pass remains sequential, but all successful latents are
+        first parked on CPU and decoded after one main-model -> decoder switch.
+        """
+        if not items:
+            return []
+        if self.memory_mode != "sequential" or self.device.type != "cuda":
+            outputs: list[AudioOutput | Exception] = []
+            for item in items:
+                try:
+                    if item.get("seed") is not None:
+                        set_seed(int(item["seed"]))
+                    outputs.append(self.tts(**{key: value for key, value in item.items() if key != "seed"}))
+                except Exception as exc:
+                    self._cancel_check()
+                    outputs.append(exc)
+            return outputs
+
+        original_progress = self._progress_callback
+        deferred: list[AudioOutput | Exception] = []
+        total = len(items)
+        try:
+            for index, item in enumerate(items):
+                self._cancel_check()
+                if item.get("seed") is not None:
+                    set_seed(int(item["seed"]))
+
+                def latent_progress(phase, value, message, item_index=index):
+                    scaled = 0.02 + 0.74 * (item_index + min(1.0, float(value))) / total
+                    original_progress(
+                        f"batch_{item_index + 1}_{phase}",
+                        scaled,
+                        f"批量 latent {item_index + 1}/{total}：{message}",
+                    )
+
+                self._progress_callback = latent_progress
+                try:
+                    prompt_text = str(item["prompt_text"])
+                    target_text = str(item["target_text"])
+                    language = str(item.get("language") or "zh")
+                    input_chatml = build_tts_prompt(
+                        prompt_text,
+                        target_text,
+                        language,
+                        self.model.config.audio_special_token_no_latent,
+                    )
+                    input_audios = [{
+                        "feat_type": FEAT_TYPE_GENERATION,
+                        "audio_understand": None,
+                        "audio_generation": self._read_generation_audio(str(item["prompt_audio"])),
+                        "role": "assistant",
+                    }]
+                    generation_keys = {
+                        "max_new_audio_steps",
+                        "min_new_audio_steps",
+                        "max_new_text_tokens",
+                        "n_timesteps",
+                        "inference_cfg",
+                    }
+                    deferred.append(
+                        self._run_audio_generation(
+                            "tts",
+                            input_chatml,
+                            input_audios,
+                            defer_decode=True,
+                            **{key: item[key] for key in generation_keys if key in item},
+                        )
+                    )
+                except Exception as exc:
+                    self._cancel_check()
+                    deferred.append(exc)
+
+            original_progress("batch_decoder_transfer", 0.78, "批量 latent 完成，正在切换解码器")
+            self.model.to("cpu")
+            gc.collect()
+            torch.cuda.empty_cache()
+            assert self.vae_decoder is not None
+            self.vae_decoder.to(self.device)
+            for index, value in enumerate(deferred):
+                if isinstance(value, Exception):
+                    continue
+                self._cancel_check()
+                try:
+                    value.audio = self.vae_decoder.decode(
+                        value.vae_latents.to(self.device).float()
+                    ).cpu()
+                    original_progress(
+                        f"batch_{index + 1}_decode",
+                        0.8 + 0.18 * (index + 1) / total,
+                        f"已解码 {index + 1}/{total}",
+                    )
+                except Exception as exc:
+                    self._cancel_check()
+                    deferred[index] = exc
+            self.vae_decoder.to("cpu")
+            gc.collect()
+            torch.cuda.empty_cache()
+            return deferred
+        finally:
+            self._progress_callback = original_progress
 
     def _ensure_generation_model_device(self) -> None:
         """Restore the main model after sequential decoder offload."""
@@ -589,6 +764,8 @@ class FireRedAudioInference:
         max_new_text_tokens: int = 512,
         n_timesteps: int = 10,
         inference_cfg: float = 2.0,
+        quality_retries: int = 1,
+        quality_gate: bool = True,
     ) -> AudioOutput:
         """Synthesis from a timbre description.
 
@@ -597,15 +774,56 @@ class FireRedAudioInference:
         so max_new_text_tokens must be generous. generate_tts's default of 32 is far
         too small and yields zero latents.
         """
+        requested_seed = int(torch.initial_seed())
+        duration_limit = voice_design_duration_limit(text)
+        gate = (
+            lambda latents: _voice_design_runaway_reason(latents, text, duration_limit)
+            if quality_gate
+            else None
+        )
         return self._run_audio_generation(
             "voice_design",
             build_voice_design_prompt(instruction, text), [],
+            quality_gate=gate,
+            quality_retries=quality_retries if quality_gate else 0,
+            requested_seed=requested_seed,
             max_new_audio_steps=max_new_audio_steps,
             min_new_audio_steps=min_new_audio_steps,
             max_new_text_tokens=max_new_text_tokens,
             n_timesteps=n_timesteps,
             inference_cfg=inference_cfg,
         )
+
+
+def voice_design_duration_limit(text: str) -> float:
+    """Conservative upper bound used only to catch runaway voice-design spans.
+
+    The released model emits 25 RedAE latents per second. Normal speech usually
+    needs far less than 1.2 seconds per CJK character or Latin word; a 4 second
+    pause budget and a 12 second floor leave room for deliberately slow delivery.
+    """
+    cjk_units = sum(
+        "\u3400" <= character <= "\u9fff" or "\uf900" <= character <= "\ufaff"
+        for character in text
+    )
+    latin_units = len(re.findall(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*", text))
+    speech_units = max(1, cjk_units + latin_units)
+    return max(12.0, 4.0 + 1.2 * speech_units)
+
+
+def _voice_design_runaway_reason(
+    vae_latents: torch.Tensor,
+    text: str,
+    duration_limit: float | None = None,
+) -> str | None:
+    actual_duration = int(vae_latents.shape[1]) / 25.0
+    limit = voice_design_duration_limit(text) if duration_limit is None else duration_limit
+    if actual_duration <= limit:
+        return None
+    return (
+        f"{int(vae_latents.shape[1])} RedAE latents ({actual_duration:.2f}s) exceeded "
+        f"the conservative {limit:.2f}s limit for the target text"
+    )
 
 
 # ======================================================================= CLI
@@ -676,6 +894,17 @@ def parse_args():
                    help="classifier-free guidance weight w, applied to the velocity "
                         "field as (1+w)*cond - w*uncond; w=0 disables guidance and "
                         "larger w pushes further toward the conditional")
+    p.add_argument(
+        "--voice-design-quality-retries",
+        type=int,
+        default=1,
+        help="deterministic seed+1 retries after a runaway voice-design span",
+    )
+    p.add_argument(
+        "--disable-voice-design-quality-gate",
+        action="store_true",
+        help="return the raw upstream voice-design result without runaway detection",
+    )
     return p.parse_args()
 
 
@@ -748,7 +977,13 @@ def main():
         result = engine.edit(args.audio[0], args.instruction, args.edit_type, **common)
     else:
         _require(args, "instruction", "text")
-        result = engine.voice_design(args.instruction, args.text, **common)
+        result = engine.voice_design(
+            args.instruction,
+            args.text,
+            quality_retries=args.voice_design_quality_retries,
+            quality_gate=not args.disable_voice_design_quality_gate,
+            **common,
+        )
 
     if result.text is not None:
         # Rewritten text from edit(semantic), or voice_design's timbre tags

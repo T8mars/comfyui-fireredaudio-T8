@@ -4,15 +4,19 @@ import importlib.metadata
 import json
 import logging
 import platform
+import shutil
 import sys
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from comfy_api.latest import ComfyExtension, io
 
 from .runtime.audio_adapter import (
+    _safe_name,
+    _safe_output_dir,
     audio_to_wav,
     output_wav_path,
     save_audio_file,
@@ -29,6 +33,26 @@ from .runtime.model_discovery import (
     resolve_model,
     validate_sizes,
 )
+from .runtime.production import (
+    MANIFEST_VERSION,
+    AudioBatch,
+    ScriptPlan,
+    VoiceBank,
+    VoiceProfile,
+    can_reuse_manifest_item,
+    create_voice_bank,
+    create_voice_profile,
+    line_fingerprint,
+    load_manifest,
+    load_project_exchange,
+    manifest_items_by_id,
+    parse_script,
+    render_timeline_to_wav,
+    stable_digest,
+    text_error_rate,
+    wav_metrics,
+    write_manifest,
+)
 from .runtime.types import GenerationSettings, RuntimeHandle
 from .runtime.worker_manager import WORKER_MANAGER
 
@@ -36,6 +60,11 @@ LOGGER = logging.getLogger(__name__)
 CATEGORY = "T8star-Aix/Audio/FireRedAudio"
 ModelType = io.Custom("T8_FIREREDAUDIO_MODEL")
 SettingsType = io.Custom("T8_FIREREDAUDIO_SETTINGS")
+VoiceProfileType = io.Custom("T8_FIREREDAUDIO_VOICE_PROFILE")
+VoiceBankType = io.Custom("T8_FIREREDAUDIO_VOICE_BANK")
+ScriptPlanType = io.Custom("T8_FIREREDAUDIO_SCRIPT_PLAN")
+AudioBatchType = io.Custom("T8_FIREREDAUDIO_AUDIO_BATCH")
+SpeechQAType = io.Custom("T8_FIREREDAUDIO_SPEECH_QA")
 
 LONG_LOCATE_PROMPTS = {
     "timeline_summary": (
@@ -89,6 +118,37 @@ def _client(handle: RuntimeHandle):
 
 def _settings(value: GenerationSettings | None) -> GenerationSettings:
     return value or GenerationSettings()
+
+
+def _audio_batch_state(value: AudioBatch) -> list[dict[str, Any]]:
+    state: list[dict[str, Any]] = []
+    if not isinstance(value, AudioBatch):
+        return state
+    for item in value.items:
+        path = Path(str(item.get("output_path") or ""))
+        file_state: dict[str, Any] = {"exists": path.is_file()}
+        if file_state["exists"]:
+            stat = path.stat()
+            file_state.update(size=stat.st_size, mtime_ns=stat.st_mtime_ns)
+        state.append(
+            {
+                "line_id": item.get("line_id"),
+                "fingerprint": item.get("fingerprint"),
+                "status": item.get("status"),
+                "output_path": str(path),
+                "file": file_state,
+            }
+        )
+    return state
+
+
+def _is_processing_interrupt(exc: BaseException) -> bool:
+    try:
+        from comfy.model_management import InterruptProcessingException
+
+        return isinstance(exc, InterruptProcessingException)
+    except ImportError:
+        return False
 
 
 def _infer(handle: RuntimeHandle, request: dict[str, Any]) -> dict[str, Any]:
@@ -641,6 +701,558 @@ class T8FireRedAudioReferenceQuality(io.ComfyNode):
         return io.NodeOutput(audio, _json(result))
 
 
+class T8FireRedAudioProjectExchange(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_ProjectExchange",
+            display_name="FireRedAudio 桌面项目交换 · T8star-Aix",
+            category=CATEGORY,
+            description="载入桌面整合包导出的项目 JSON，并还原角色音色库、脚本计划和已采用 take。",
+            inputs=[
+                io.String.Input(
+                    "exchange_path",
+                    display_name="项目交换 JSON 路径",
+                    multiline=False,
+                    default="",
+                )
+            ],
+            outputs=[
+                VoiceBankType.Output("voice_bank", display_name="角色音色库"),
+                ScriptPlanType.Output("script_plan", display_name="脚本计划"),
+                AudioBatchType.Output("audio_batch", display_name="已采用 Take"),
+                io.String.Output("report", display_name="载入报告"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, exchange_path: str) -> io.NodeOutput:
+        bank, plan, batch, report = load_project_exchange(exchange_path)
+        return io.NodeOutput(bank, plan, batch, _json(report))
+
+
+class T8FireRedAudioVoiceProfile(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_VoiceProfile",
+            display_name="FireRedAudio 音色档案 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="把参考音频、逐字稿、语言和标签封装为可复用音色档案。参考音频使用内容哈希缓存。",
+            inputs=[
+                io.Audio.Input("audio", display_name="参考音频"),
+                io.String.Input("name", display_name="角色/音色名称", default="旁白"),
+                io.String.Input("prompt_text", display_name="参考音频逐字稿", multiline=True, dynamic_prompts=True),
+                io.Combo.Input("language", display_name="语言", options=["zh", "en"], default="zh"),
+                io.String.Input("tags", display_name="标签（逗号分隔）", default="", optional=True),
+            ],
+            outputs=[
+                VoiceProfileType.Output("profile", display_name="音色档案"),
+                io.String.Output("profile_json", display_name="档案 JSON"),
+            ],
+        )
+
+    @classmethod
+    def validate_inputs(cls, name: str, prompt_text: str, **kwargs) -> bool | str:
+        if not name.strip():
+            return "音色名称不能为空。"
+        if not prompt_text.strip():
+            return "参考音频逐字稿不能为空。"
+        return True
+
+    @classmethod
+    def execute(
+        cls,
+        audio: dict,
+        name: str,
+        prompt_text: str,
+        language: str,
+        tags: str = "",
+    ) -> io.NodeOutput:
+        profile = create_voice_profile(
+            name,
+            audio_to_wav(audio, f"voice-profile-{_safe_name(name, 'voice')}"),
+            prompt_text,
+            language,
+            tags,
+        )
+        return io.NodeOutput(profile, _json(profile.to_dict()))
+
+
+class T8FireRedAudioVoiceBank(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_VoiceBank",
+            display_name="FireRedAudio 音色库（1–8）· T8star-Aix",
+            category=CATEGORY,
+            description="聚合 1–8 个唯一命名的音色档案，供角色脚本和批量配音复用。",
+            inputs=[
+                io.Autogrow.Input(
+                    "profiles",
+                    display_name="音色档案",
+                    template=io.Autogrow.TemplatePrefix(
+                        VoiceProfileType.Input("profile"), prefix="profile_", min=1, max=8
+                    ),
+                ),
+            ],
+            outputs=[
+                VoiceBankType.Output("voice_bank", display_name="音色库"),
+                io.String.Output("voice_bank_json", display_name="音色库 JSON"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, profiles: dict) -> io.NodeOutput:
+        bank = create_voice_bank(_autogrow_values(profiles))
+        return io.NodeOutput(bank, _json(bank.to_dict()))
+
+
+class T8FireRedAudioScriptParser(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_ScriptParser",
+            display_name="FireRedAudio 角色脚本/SRT 预检 · T8star-Aix",
+            category=CATEGORY,
+            description=(
+                "解析 SRT、角色: 台词、带时间码角色脚本或 JSON；检查角色绑定、空台词、语言和时间范围。"
+            ),
+            inputs=[
+                VoiceBankType.Input("voice_bank", display_name="音色库"),
+                io.String.Input("script", display_name="脚本", multiline=True, dynamic_prompts=True),
+                io.Combo.Input(
+                    "source_format",
+                    display_name="脚本格式",
+                    options=["auto", "srt", "role_script", "json"],
+                    default="auto",
+                ),
+                io.String.Input("default_speaker", display_name="默认角色", default="", optional=True),
+                io.Boolean.Input("strict_validation", display_name="发现错误时终止", default=False),
+            ],
+            outputs=[
+                ScriptPlanType.Output("script_plan", display_name="脚本计划"),
+                io.String.Output("normalized_json", display_name="标准化脚本 JSON"),
+                io.String.Output("preflight_report", display_name="预检报告"),
+            ],
+        )
+
+    @classmethod
+    def validate_inputs(cls, script: str, **kwargs) -> bool | str:
+        return True if script.strip() else "脚本不能为空。"
+
+    @classmethod
+    def execute(
+        cls,
+        voice_bank: VoiceBank,
+        script: str,
+        source_format: str,
+        default_speaker: str,
+        strict_validation: bool,
+    ) -> io.NodeOutput:
+        plan = parse_script(script, source_format, voice_bank, default_speaker)
+        report = {
+            "valid": plan.valid,
+            "format": plan.source_format,
+            "line_count": len(plan.lines),
+            "error_count": sum(item.get("severity") == "error" for item in plan.issues),
+            "warning_count": sum(item.get("severity") == "warning" for item in plan.issues),
+            "issues": list(plan.issues),
+        }
+        if strict_validation and not plan.valid:
+            raise ValueError("脚本预检失败：" + _json(report))
+        return io.NodeOutput(plan, _json(plan.to_dict()), _json(report))
+
+
+class T8FireRedAudioBatchDubbing(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_BatchDubbing",
+            display_name="FireRedAudio 可恢复批量配音 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "按脚本顺序逐条调用隔离 Worker。每条成功后原子写入 manifest；重新执行时只跳过指纹一致且文件存在的条目。"
+            ),
+            inputs=[
+                ModelType.Input("model"),
+                ScriptPlanType.Input("script_plan", display_name="脚本计划"),
+                VoiceBankType.Input("voice_bank", display_name="音色库"),
+                io.String.Input("project_name", display_name="项目名", default="dubbing-project"),
+                io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/projects"),
+                io.Boolean.Input("resume", display_name="从 manifest 恢复", default=True),
+                io.Boolean.Input("continue_on_error", display_name="单条失败后继续", default=True),
+                SettingsType.Input("settings", display_name="生成参数", optional=True),
+            ],
+            outputs=[
+                AudioBatchType.Output("audio_batch", display_name="批量音频"),
+                io.String.Output("manifest_path", display_name="Manifest 路径"),
+                io.String.Output("batch_report", display_name="批量报告"),
+            ],
+        )
+
+    @classmethod
+    def validate_inputs(cls, project_name: str, **kwargs) -> bool | str:
+        return True if project_name.strip() else "项目名不能为空。"
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        model: RuntimeHandle,
+        script_plan: ScriptPlan,
+        voice_bank: VoiceBank,
+        project_name: str,
+        subfolder: str,
+        resume: bool,
+        continue_on_error: bool,
+        settings: GenerationSettings | None = None,
+        **kwargs,
+    ) -> str:
+        try:
+            project = _safe_name(project_name, "dubbing-project")
+            clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/projects"
+            manifest_path = _safe_output_dir(f"{clean_subfolder}/{project}") / "manifest.json"
+            manifest_state: Any = "missing"
+            if manifest_path.is_file():
+                loaded = load_manifest(manifest_path)
+                manifest_state = [
+                    {
+                        "line_id": item.get("line_id"),
+                        "fingerprint": item.get("fingerprint"),
+                        "status": item.get("status"),
+                        "output_path": item.get("output_path"),
+                        "file_exists": Path(str(item.get("output_path") or "")).is_file(),
+                    }
+                    for item in (loaded or {}).get("items", [])
+                    if isinstance(item, dict)
+                ]
+            return stable_digest(
+                {
+                    "model": model.to_dict(),
+                    "script": script_plan.to_dict(),
+                    "voice_bank": voice_bank.to_dict(),
+                    "settings": _settings(settings).to_dict(),
+                    "project": project,
+                    "subfolder": clean_subfolder,
+                    "resume": resume,
+                    "continue_on_error": continue_on_error,
+                    "manifest_state": manifest_state,
+                }
+            )
+        except Exception as exc:
+            return f"batch-invalid:{type(exc).__name__}:{exc}"
+
+    @classmethod
+    def execute(
+        cls,
+        model: RuntimeHandle,
+        script_plan: ScriptPlan,
+        voice_bank: VoiceBank,
+        project_name: str,
+        subfolder: str,
+        resume: bool,
+        continue_on_error: bool,
+        settings: GenerationSettings | None = None,
+    ) -> io.NodeOutput:
+        if not isinstance(script_plan, ScriptPlan) or not isinstance(voice_bank, VoiceBank):
+            raise TypeError("批量配音必须连接脚本计划和音色库")
+        if not script_plan.valid:
+            raise ValueError("脚本预检存在错误，不能开始批量配音：" + _json(list(script_plan.issues)))
+        project = _safe_name(project_name, "dubbing-project")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/projects"
+        project_dir = _safe_output_dir(f"{clean_subfolder}/{project}")
+        manifest_path = project_dir / "manifest.json"
+        previous = load_manifest(manifest_path) if resume and manifest_path.is_file() else None
+        previous_items = manifest_items_by_id(previous)
+        config = _settings(settings).to_dict()
+        resolved_model_root = Path(model.model_root).resolve()
+        model_identity = stable_digest(
+            {
+                "model_root": str(resolved_model_root),
+                "model_fingerprint": fingerprint(resolved_model_root),
+                "device": model.device,
+                "memory_mode": model.memory_mode,
+            }
+        )
+        manifest_payload: dict[str, Any] = {
+            "manifest_version": MANIFEST_VERSION,
+            "project_name": project,
+            "script_digest": script_plan.to_dict()["digest"],
+            "voice_bank_digest": voice_bank.to_dict()["digest"],
+            "settings": config,
+            "model_identity": model_identity,
+            "items": [],
+        }
+        generated = cached = failed = 0
+        total = len(script_plan.lines)
+        for position, line in enumerate(script_plan.lines, 1):
+            profile = voice_bank.resolve(line.speaker)
+            if profile is None:
+                raise ValueError(f"角色没有音色档案：{line.speaker}")
+            fingerprint_value = line_fingerprint(line, profile, config, model_identity)
+            filename = _safe_name(f"{line.index:04d}-{line.speaker}-{line.line_id}", f"line-{line.index:04d}") + ".wav"
+            target = (project_dir / filename).resolve()
+            try:
+                target.relative_to(project_dir.resolve())
+            except ValueError as exc:
+                raise ValueError("批量输出路径越界") from exc
+            old = previous_items.get(line.line_id)
+            item = {
+                **line.to_dict(),
+                "profile_id": profile.profile_id,
+                "fingerprint": fingerprint_value,
+                "output_path": str(target),
+            }
+            if resume and can_reuse_manifest_item(old, fingerprint_value, target):
+                item.update(status="complete", cache_hit=True, worker_report=old.get("worker_report", {}))
+                cached += 1
+            else:
+                try:
+                    request = _base_request(model, "tts", _settings(settings))
+                    request.update(
+                        {
+                            "prompt_audio": profile.prompt_audio,
+                            "prompt_text": profile.prompt_text,
+                            "target_text": line.text,
+                            "language": line.language,
+                            "output_path": str(target),
+                        }
+                    )
+                    result = _infer(model, request)
+                    actual = Path(str(result.get("output_path") or target))
+                    if not actual.is_file():
+                        raise RuntimeError("Worker 未产生预期音频文件")
+                    if actual.resolve() != target:
+                        shutil.copy2(actual, target)
+                    item.update(status="complete", cache_hit=False, worker_report=result)
+                    generated += 1
+                except Exception as exc:
+                    if _is_processing_interrupt(exc):
+                        raise
+                    item.update(status="failed", cache_hit=False, error=f"{type(exc).__name__}: {exc}")
+                    failed += 1
+                    manifest_payload["items"].append(item)
+                    write_manifest(manifest_path, manifest_payload)
+                    _set_official_progress(position / max(1, total))
+                    if not continue_on_error:
+                        raise
+                    continue
+            manifest_payload["items"].append(item)
+            write_manifest(manifest_path, manifest_payload)
+            _set_official_progress(position / max(1, total))
+        batch = AudioBatch(str(manifest_path), tuple(manifest_payload["items"]))
+        report = {
+            "manifest_path": str(manifest_path),
+            "total": total,
+            "generated": generated,
+            "cache_hits": cached,
+            "failed": failed,
+            "execution_model": "sequential_worker_calls",
+            "native_tensor_batch": False,
+        }
+        return io.NodeOutput(batch, str(manifest_path), _json(report))
+
+
+class T8FireRedAudioTimelineRender(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_TimelineRender",
+            display_name="FireRedAudio 时间线渲染 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="把批量配音按顺序、脚本时间码或全轨叠加渲染；报告时间槽溢出、混音峰值和限幅增益。",
+            inputs=[
+                AudioBatchType.Input("audio_batch", display_name="批量音频"),
+                io.Combo.Input("mode", display_name="排列模式", options=["sequence", "timeline", "overlay"], default="timeline"),
+                io.Int.Input("gap_ms", display_name="顺序间隔（毫秒）", default=120, min=0, max=10000),
+                io.Combo.Input("peak_policy", display_name="峰值策略", options=["limit", "clip", "none"], default="limit"),
+                io.Int.Input("sample_rate", display_name="输出采样率", default=24000, min=8000, max=192000, advanced=True),
+            ],
+            outputs=[
+                io.Audio.Output("audio", display_name="时间线音频"),
+                io.String.Output("timeline_report", display_name="时间线报告"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        audio_batch: AudioBatch,
+        mode: str,
+        gap_ms: int,
+        peak_policy: str,
+        sample_rate: int,
+        **kwargs,
+    ) -> str:
+        return stable_digest(
+            {
+                "audio_batch": _audio_batch_state(audio_batch),
+                "mode": mode,
+                "gap_ms": gap_ms,
+                "peak_policy": peak_policy,
+                "sample_rate": sample_rate,
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        audio_batch: AudioBatch,
+        mode: str,
+        gap_ms: int,
+        peak_policy: str,
+        sample_rate: int,
+    ) -> io.NodeOutput:
+        if not isinstance(audio_batch, AudioBatch):
+            raise TypeError("时间线渲染必须连接批量音频")
+        output = output_wav_path("timeline-render")
+        report = render_timeline_to_wav(
+            audio_batch.items,
+            output,
+            mode=mode,
+            gap_ms=gap_ms,
+            peak_policy=peak_policy,
+            sample_rate=sample_rate,
+        )
+        return io.NodeOutput(wav_to_audio(output), _json(report))
+
+
+class T8FireRedAudioSpeechQA(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_SpeechQA",
+            display_name="FireRedAudio 成品语音 QA · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="逐条 ASR 回读并结合时长、静音、削波做成品质检；中文使用 CER，英文使用 WER。",
+            inputs=[
+                ModelType.Input("model"),
+                AudioBatchType.Input("audio_batch", display_name="批量音频"),
+                io.Float.Input("max_text_error_rate", display_name="最大 CER/WER", default=0.20, min=0.0, max=1.0, step=0.01),
+                io.Float.Input("max_clipping_ratio", display_name="最大削波比例", default=0.001, min=0.0, max=1.0, step=0.0001),
+                io.Float.Input("max_silence_ratio", display_name="最大静音比例", default=0.80, min=0.0, max=1.0, step=0.01),
+                io.Float.Input("max_cue_overrun_seconds", display_name="最大超出时间槽（秒）", default=0.50, min=0.0, max=60.0, step=0.1),
+                io.Int.Input("max_new_tokens", display_name="ASR 最大新 Token", default=512, min=1, max=4096),
+            ],
+            outputs=[
+                SpeechQAType.Output("qa", display_name="语音 QA"),
+                io.String.Output("qa_report", display_name="QA 报告"),
+                io.String.Output("failed_line_ids", display_name="未通过条目"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        model: RuntimeHandle,
+        audio_batch: AudioBatch,
+        max_text_error_rate: float,
+        max_clipping_ratio: float,
+        max_silence_ratio: float,
+        max_cue_overrun_seconds: float,
+        max_new_tokens: int,
+        **kwargs,
+    ) -> str:
+        return stable_digest(
+            {
+                "model": model.to_dict(),
+                "audio_batch": _audio_batch_state(audio_batch),
+                "thresholds": {
+                    "max_text_error_rate": max_text_error_rate,
+                    "max_clipping_ratio": max_clipping_ratio,
+                    "max_silence_ratio": max_silence_ratio,
+                    "max_cue_overrun_seconds": max_cue_overrun_seconds,
+                    "max_new_tokens": max_new_tokens,
+                },
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model: RuntimeHandle,
+        audio_batch: AudioBatch,
+        max_text_error_rate: float,
+        max_clipping_ratio: float,
+        max_silence_ratio: float,
+        max_cue_overrun_seconds: float,
+        max_new_tokens: int,
+    ) -> io.NodeOutput:
+        if not isinstance(audio_batch, AudioBatch):
+            raise TypeError("语音 QA 必须连接批量音频")
+        results: list[dict[str, Any]] = []
+        failed_ids: list[str] = []
+        items = audio_batch.successful_items()
+        for position, item in enumerate(items, 1):
+            line_id = str(item.get("line_id") or position)
+            try:
+                path = Path(str(item["output_path"]))
+                metrics = wav_metrics(path)
+                request = _base_request(model, "asr")
+                request.update(
+                    {
+                        "audio_path": str(path),
+                        "prompt": "Transcribe speech to text.",
+                        "max_new_tokens": max_new_tokens,
+                    }
+                )
+                inference = _infer(model, request)
+                transcript = str(inference.get("answer") or "")
+                metric_name, error_rate = text_error_rate(
+                    str(item.get("text") or ""), transcript, str(item.get("language") or "zh")
+                )
+                cue_overrun = 0.0
+                if item.get("start_seconds") is not None and item.get("end_seconds") is not None:
+                    available = float(item["end_seconds"]) - float(item["start_seconds"])
+                    cue_overrun = max(0.0, metrics["duration_seconds"] - available)
+                checks = {
+                    "text": error_rate <= max_text_error_rate,
+                    "clipping": metrics["clipping_ratio"] <= max_clipping_ratio,
+                    "silence": metrics["silence_ratio"] <= max_silence_ratio,
+                    "cue_duration": cue_overrun <= max_cue_overrun_seconds,
+                }
+                passed = all(checks.values())
+                result = {
+                    "line_id": line_id,
+                    "speaker": item.get("speaker"),
+                    "reference_text": item.get("text"),
+                    "transcript": transcript,
+                    "metric": metric_name,
+                    "text_error_rate": error_rate,
+                    "cue_overrun_seconds": cue_overrun,
+                    "audio_metrics": metrics,
+                    "checks": checks,
+                    "passed": passed,
+                }
+            except Exception as exc:
+                if _is_processing_interrupt(exc):
+                    raise
+                passed = False
+                result = {"line_id": line_id, "passed": False, "error": f"{type(exc).__name__}: {exc}"}
+            if not passed:
+                failed_ids.append(line_id)
+            results.append(result)
+            _set_official_progress(position / max(1, len(items)))
+        qa = {
+            "passed": bool(results) and not failed_ids,
+            "total": len(results),
+            "passed_count": len(results) - len(failed_ids),
+            "failed_count": len(failed_ids),
+            "thresholds": {
+                "max_text_error_rate": max_text_error_rate,
+                "max_clipping_ratio": max_clipping_ratio,
+                "max_silence_ratio": max_silence_ratio,
+                "max_cue_overrun_seconds": max_cue_overrun_seconds,
+            },
+            "items": results,
+        }
+        return io.NodeOutput(qa, _json(qa), "\n".join(failed_ids))
+
+
 class T8FireRedAudioSaveAudio(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -772,6 +1384,13 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioSpeechEdit,
             T8FireRedAudioAcousticEdit,
             T8FireRedAudioReferenceQuality,
+            T8FireRedAudioProjectExchange,
+            T8FireRedAudioVoiceProfile,
+            T8FireRedAudioVoiceBank,
+            T8FireRedAudioScriptParser,
+            T8FireRedAudioBatchDubbing,
+            T8FireRedAudioTimelineRender,
+            T8FireRedAudioSpeechQA,
             T8FireRedAudioSaveAudio,
             T8FireRedAudioSaveSubtitle,
             T8FireRedAudioRuntimeControl,

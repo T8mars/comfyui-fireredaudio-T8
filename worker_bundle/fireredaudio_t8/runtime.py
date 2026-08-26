@@ -10,7 +10,7 @@ import time
 import tempfile
 import uuid
 from datetime import datetime, timezone
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +48,11 @@ class RuntimeState:
     cancel_requested: bool = False
     completed_tasks: int = 0
     last_error: str | None = None
+    task_started_at: str | None = None
+    phase_started_at: str | None = None
+    phase_elapsed_seconds: float = 0.0
+    phase_timings: dict[str, float] = field(default_factory=dict)
+    cold_start: bool | None = None
 
 
 def _package_version(name: str) -> str | None:
@@ -66,29 +71,51 @@ class FireRedAudioRuntime:
         self._state_lock = threading.RLock()
         self._cancel_event = threading.Event()
         self._state = RuntimeState()
+        self._trace_started: float | None = None
+        self._trace_phase: str | None = None
+        self._trace_phase_started: float | None = None
+        self._trace_phase_started_at: str | None = None
+        self._trace_timings: dict[str, float] = {}
 
     def status(self) -> dict[str, Any]:
         # Status must remain readable while the model lock is held by a long inference.
         with self._state_lock:
             data = asdict(self._state)
+        packages = {
+            name: _package_version(name)
+            for name in (
+                "torch",
+                "torchaudio",
+                "torchcodec",
+                "transformers",
+                "numpy",
+                "einops",
+                "flash-attn",
+                "flash-linear-attention",
+                "liger-kernel",
+            )
+        }
         data.update(
             {
                 "runtime_version": RUNTIME_VERSION,
                 "code_revision": CODE_REVISION,
                 "model_revision": MODEL_REVISION,
-                "packages": {
-                    name: _package_version(name)
-                    for name in (
-                        "torch",
-                        "torchaudio",
-                        "torchcodec",
-                        "transformers",
-                        "numpy",
-                        "einops",
-                        "flash-attn",
-                        "flash-linear-attention",
-                        "liger-kernel",
-                    )
+                "packages": packages,
+                "acceleration": {
+                    "attention_backend": (
+                        "flash_attention_2" if packages["flash-attn"] else "sdpa"
+                    ),
+                    "flash_linear_attention": bool(packages["flash-linear-attention"]),
+                    "liger_kernel": bool(packages["liger-kernel"]),
+                    "latent_first_batch": True,
+                    "deepspeed": {
+                        "supported": False,
+                        "reason": "当前单卡推理不使用 DeepSpeed；它不会减少 sequential 主模型/解码器换卡瓶颈。",
+                    },
+                    "transformers_isolation": {
+                        "worker_version": packages["transformers"],
+                        "host_independent": True,
+                    },
                 },
                 "gpus": gpu_inventory(),
             }
@@ -101,11 +128,65 @@ class FireRedAudioRuntime:
                 setattr(self._state, key, value)
 
     def _progress(self, phase: str, progress: float, message: str) -> None:
+        now = time.perf_counter()
+        if self._trace_started is not None:
+            if self._trace_phase is not None and self._trace_phase != phase:
+                assert self._trace_phase_started is not None
+                elapsed = max(0.0, now - self._trace_phase_started)
+                self._trace_timings[self._trace_phase] = (
+                    self._trace_timings.get(self._trace_phase, 0.0) + elapsed
+                )
+                self._trace_phase_started = now
+                self._trace_phase_started_at = datetime.now(timezone.utc).isoformat()
+            elif self._trace_phase is None:
+                self._trace_phase_started = now
+                self._trace_phase_started_at = datetime.now(timezone.utc).isoformat()
+            self._trace_phase = phase
+        snapshot = self._trace_snapshot(now)
         self._update_state(
             phase=phase,
             progress=max(0.0, min(1.0, float(progress))),
             progress_message=message,
+            phase_started_at=self._trace_phase_started_at,
+            phase_elapsed_seconds=snapshot["phase_elapsed_seconds"],
+            phase_timings=snapshot["phase_timings"],
         )
+
+    def _begin_trace(self, *, cold_start: bool) -> None:
+        now = time.perf_counter()
+        self._trace_started = now
+        self._trace_phase = None
+        self._trace_phase_started = None
+        self._trace_phase_started_at = None
+        self._trace_timings = {}
+        self._update_state(
+            task_started_at=datetime.now(timezone.utc).isoformat(),
+            phase_started_at=None,
+            phase_elapsed_seconds=0.0,
+            phase_timings={},
+            cold_start=cold_start,
+        )
+
+    def _trace_snapshot(self, now: float | None = None) -> dict[str, Any]:
+        current = time.perf_counter() if now is None else now
+        timings = dict(self._trace_timings)
+        phase_elapsed = 0.0
+        if self._trace_phase is not None and self._trace_phase_started is not None:
+            phase_elapsed = max(0.0, current - self._trace_phase_started)
+            timings[self._trace_phase] = timings.get(self._trace_phase, 0.0) + phase_elapsed
+        return {
+            "phase_elapsed_seconds": round(phase_elapsed, 3),
+            "phase_timings": {
+                key: round(value, 3) for key, value in sorted(timings.items())
+            },
+        }
+
+    def _reset_trace(self) -> None:
+        self._trace_started = None
+        self._trace_phase = None
+        self._trace_phase_started = None
+        self._trace_phase_started_at = None
+        self._trace_timings = {}
 
     def _check_cancel(self) -> None:
         if self._cancel_event.is_set():
@@ -144,6 +225,9 @@ class FireRedAudioRuntime:
         root = normalize_model_root(model_root)
         profile = "full" if require_decoder else "lite"
         validate_model_dir(root, profile=profile).require_valid()
+        # Only enter the visible loading phase after model files have passed
+        # validation. Missing models therefore fail during "validating".
+        self._progress("loading", 0.02, "正在加载模型")
         requested_root = str(root)
         resolved_memory_mode = _resolve_memory_mode(memory_mode, device, require_decoder)
         if (
@@ -226,6 +310,11 @@ class FireRedAudioRuntime:
                 "progress": self._state.progress,
                 "progress_message": self._state.progress_message,
                 "cancel_requested": self._state.cancel_requested,
+                "task_started_at": self._state.task_started_at,
+                "phase_started_at": self._state.phase_started_at,
+                "phase_elapsed_seconds": self._state.phase_elapsed_seconds,
+                "phase_timings": dict(self._state.phase_timings),
+                "cold_start": self._state.cold_start,
             } if self._state.active_task is not None else {}
         self._engine = None
         with self._state_lock:
@@ -260,24 +349,26 @@ class FireRedAudioRuntime:
 
         with self._lock:
             self._cancel_event.clear()
+            engine_before = self._engine
+            self._begin_trace(cold_start=engine_before is None)
             self._update_state(
                 active_task=task,
                 active_task_id=task_id,
-                phase="validating",
-                progress=0.01,
-                progress_message="正在校验模型与任务参数",
                 cancel_requested=False,
                 last_error=None,
             )
+            self._progress("validating", 0.01, "正在校验模型与任务参数")
+            _reset_cuda_peak_stats(device)
             try:
                 self._check_cancel()
-                self._progress("loading", 0.02, "正在加载模型")
                 self._load(
                     model_root,
                     device,
                     profile_for_task(task) == "full",
                     memory_mode,
                 )
+                cold_start = engine_before is None or engine_before is not self._engine
+                self._update_state(cold_start=cold_start)
                 self._check_cancel()
                 if hasattr(self._engine, "set_task_callbacks"):
                     self._engine.set_task_callbacks(self._check_cancel, self._progress)
@@ -289,11 +380,25 @@ class FireRedAudioRuntime:
                 self._progress("complete", 1.0, "任务完成")
                 result["task"] = task
                 result["task_id"] = task_id
-                result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+                elapsed = round(time.perf_counter() - started, 3)
+                result["elapsed_seconds"] = elapsed
                 result["device"] = device
                 result["code_revision"] = CODE_REVISION
                 result["model_revision"] = MODEL_REVISION
                 result["quality_preset"] = request["quality_preset"]
+                result["performance"] = _performance_report(
+                    elapsed=elapsed,
+                    trace=self._trace_snapshot(),
+                    cold_start=cold_start,
+                    device=device,
+                    memory_mode=self._state.memory_mode,
+                    output_duration_seconds=result.get("duration_seconds"),
+                )
+                if result.get("metadata_path"):
+                    _augment_output_metadata(
+                        Path(str(result["metadata_path"])),
+                        {"performance": result["performance"]},
+                    )
                 return result
             except Exception as exc:
                 if isinstance(exc, TaskCancelledError):
@@ -313,6 +418,172 @@ class FireRedAudioRuntime:
                 self._cancel_event.clear()
                 if release_after:
                     self._unload_locked(preserve_error=True)
+                self._reset_trace()
+
+    def infer_tts_batch(self, requests: list[dict[str, Any]]) -> dict[str, Any]:
+        """Run latent-first TTS and decode the successful batch after one model switch."""
+        if not requests:
+            return {"outcomes": [], "completed": 0, "failed": 0}
+        normalized = [apply_quality_preset({**request, "task": "tts"}) for request in requests]
+        first = normalized[0]
+        model_root = first.get("model_root")
+        if not model_root:
+            raise WorkerProtocolError("批量 TTS 缺少 model_root")
+        device = _resolve_device(str(first.get("device") or "auto"))
+        memory_mode = str(first.get("memory_mode") or "auto")
+        for request in normalized[1:]:
+            if str(request.get("model_root") or "") != str(model_root):
+                raise WorkerProtocolError("同一批次必须使用相同模型目录")
+            if _resolve_device(str(request.get("device") or "auto")) != device:
+                raise WorkerProtocolError("同一批次必须使用相同设备")
+            if str(request.get("memory_mode") or "auto") != memory_mode:
+                raise WorkerProtocolError("同一批次必须使用相同显存模式")
+        task_id = f"tts-batch-{uuid.uuid4()}"
+        started = time.perf_counter()
+        with self._lock:
+            self._cancel_event.clear()
+            engine_before = self._engine
+            self._begin_trace(cold_start=engine_before is None)
+            self._update_state(
+                active_task="tts_batch",
+                active_task_id=task_id,
+                cancel_requested=False,
+                last_error=None,
+            )
+            self._progress("validating", 0.01, f"正在校验 {len(normalized)} 条批量 TTS")
+            _reset_cuda_peak_stats(device)
+            try:
+                self._load(model_root, device, True, memory_mode)
+                cold_start = engine_before is None or engine_before is not self._engine
+                self._update_state(cold_start=cold_start)
+                assert self._engine is not None
+                if not hasattr(self._engine, "tts_batch"):
+                    raise WorkerProtocolError("当前推理核心不支持 latent-first 批量解码")
+                if hasattr(self._engine, "set_task_callbacks"):
+                    self._engine.set_task_callbacks(self._check_cancel, self._progress)
+                engine_requests = []
+                prepared_outputs: list[Path] = []
+                for request in normalized:
+                    self._check_cancel()
+                    prepared_outputs.append(_validated_output_path(request.get("output_path")))
+                    engine_requests.append(
+                        {
+                            "prompt_text": _required_text(request, "prompt_text"),
+                            "prompt_audio": str(
+                                prepare_audio_path(_required_text(request, "prompt_audio"))
+                            ),
+                            "target_text": _required_text(request, "target_text"),
+                            "language": str(request.get("language") or "zh"),
+                            "seed": _optional_int(request.get("seed")),
+                            "max_new_audio_steps": int(request.get("max_new_audio_steps", 750)),
+                            "min_new_audio_steps": int(request.get("min_new_audio_steps", 6)),
+                            "max_new_text_tokens": int(request.get("max_new_text_tokens", 512)),
+                            "n_timesteps": int(request.get("n_timesteps", 10)),
+                            "inference_cfg": float(request.get("inference_cfg", 2.0)),
+                        }
+                    )
+                generated = self._engine.tts_batch(engine_requests)
+                outcomes: list[dict[str, Any]] = []
+                total_duration = 0.0
+                completed = 0
+                for index, (request, output_path, value) in enumerate(
+                    zip(normalized, prepared_outputs, generated, strict=True)
+                ):
+                    if isinstance(value, Exception):
+                        outcomes.append(
+                            {
+                                "ok": False,
+                                "index": index,
+                                "task_id": request.get("task_id"),
+                                "error": f"{type(value).__name__}: {value}",
+                            }
+                        )
+                        continue
+                    try:
+                        _save_audio(output_path, value.audio)
+                        duration = round(int(value.audio.shape[-1]) / 24_000, 3)
+                        total_duration += duration
+                        metadata_path = _write_output_metadata(output_path, "tts", request)
+                        response = {
+                            "output_path": str(output_path),
+                            "metadata_path": str(metadata_path),
+                            "sample_rate": 24_000,
+                            "duration_seconds": duration,
+                            "text": value.text,
+                            "task": "tts",
+                            "task_id": str(request.get("task_id") or ""),
+                            "device": device,
+                            "code_revision": CODE_REVISION,
+                            "model_revision": MODEL_REVISION,
+                            "quality_preset": request["quality_preset"],
+                        }
+                        outcomes.append({"ok": True, "index": index, "result": response})
+                        completed += 1
+                    except Exception as exc:
+                        outcomes.append(
+                            {
+                                "ok": False,
+                                "index": index,
+                                "task_id": request.get("task_id"),
+                                "error": f"{type(exc).__name__}: {exc}",
+                            }
+                        )
+                elapsed = round(time.perf_counter() - started, 3)
+                self._progress("complete", 1.0, "批量 latent 生成与统一解码完成")
+                performance = _performance_report(
+                    elapsed=elapsed,
+                    trace=self._trace_snapshot(),
+                    cold_start=cold_start,
+                    device=device,
+                    memory_mode=self._state.memory_mode,
+                    output_duration_seconds=total_duration,
+                )
+                performance.update(
+                    batch_size=len(normalized),
+                    successful_items=completed,
+                    execution_model=(
+                        "latent_first_decode_later"
+                        if self._state.memory_mode == "sequential" and device.startswith("cuda")
+                        else "resident_sequential_batch"
+                    ),
+                )
+                for outcome in outcomes:
+                    if not outcome.get("ok"):
+                        continue
+                    result = outcome["result"]
+                    result["elapsed_seconds"] = elapsed
+                    result["performance"] = performance
+                    _augment_output_metadata(
+                        Path(result["metadata_path"]), {"performance": performance}
+                    )
+                with self._state_lock:
+                    self._state.completed_tasks += completed
+                return {
+                    "task_id": task_id,
+                    "completed": completed,
+                    "failed": len(normalized) - completed,
+                    "outcomes": outcomes,
+                    "performance": performance,
+                }
+            except Exception as exc:
+                if isinstance(exc, TaskCancelledError):
+                    self._progress("cancelled", self._state.progress, "批量任务已取消")
+                else:
+                    self._progress("failed", self._state.progress, "批量任务失败")
+                self._update_state(last_error=str(exc))
+                raise
+            finally:
+                if self._engine is not None and hasattr(self._engine, "set_task_callbacks"):
+                    self._engine.set_task_callbacks()
+                self._update_state(
+                    active_task=None,
+                    active_task_id=None,
+                    cancel_requested=False,
+                )
+                self._cancel_event.clear()
+                if any(bool(request.get("release_after", False)) for request in normalized):
+                    self._unload_locked(preserve_error=True)
+                self._reset_trace()
 
     def _run_task(self, task: str, request: dict[str, Any]) -> dict[str, Any]:
         assert self._engine is not None
@@ -439,9 +710,26 @@ class FireRedAudioRuntime:
             "output_path": str(output_path),
             "metadata_path": str(metadata_path),
             "sample_rate": 24_000,
+            "duration_seconds": round(int(result.audio.shape[-1]) / 24_000, 3),
         }
         if getattr(result, "text", None) is not None:
             response["text"] = result.text
+        if task == "voice_design":
+            response.update(
+                requested_seed=getattr(result, "requested_seed", None),
+                actual_seed=getattr(result, "actual_seed", None),
+                quality_retry_count=int(getattr(result, "quality_retry_count", 0) or 0),
+                quality_gate_reason=getattr(result, "quality_gate_reason", None),
+            )
+            _augment_output_metadata(
+                metadata_path,
+                {
+                    "requested_seed": response["requested_seed"],
+                    "actual_seed": response["actual_seed"],
+                    "quality_retry_count": response["quality_retry_count"],
+                    "quality_gate_reason": response["quality_gate_reason"],
+                },
+            )
         return response
 
 
@@ -483,6 +771,72 @@ def _write_output_metadata(path: Path, task: str, request: dict[str, Any]) -> Pa
     target = path.with_suffix(path.suffix + ".json")
     target.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     return target
+
+
+def _augment_output_metadata(path: Path, values: dict[str, Any]) -> None:
+    """Atomically append non-sensitive runtime evidence to an output sidecar."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return
+        payload.update(values)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        temporary.replace(path)
+    except Exception:
+        logger.warning("无法补充生成性能记录：%s", path, exc_info=True)
+
+
+def _reset_cuda_peak_stats(device: str) -> None:
+    if not str(device).startswith("cuda"):
+        return
+    try:
+        import torch
+
+        torch.cuda.reset_peak_memory_stats(torch.device(device))
+    except Exception:
+        logger.debug("CUDA peak memory reset unavailable", exc_info=True)
+
+
+def _performance_report(
+    *,
+    elapsed: float,
+    trace: dict[str, Any],
+    cold_start: bool,
+    device: str,
+    memory_mode: str | None,
+    output_duration_seconds: Any,
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "cold_start": bool(cold_start),
+        "total_seconds": elapsed,
+        "phase_seconds": trace["phase_timings"],
+        "device": device,
+        "memory_mode": memory_mode,
+    }
+    try:
+        duration = float(output_duration_seconds)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration > 0:
+        report["output_duration_seconds"] = round(duration, 3)
+        report["rtf"] = round(elapsed / duration, 3)
+    if str(device).startswith("cuda"):
+        try:
+            import torch
+
+            target = torch.device(device)
+            report["gpu_peak_allocated_bytes"] = int(
+                torch.cuda.max_memory_allocated(target)
+            )
+            report["gpu_peak_reserved_bytes"] = int(
+                torch.cuda.max_memory_reserved(target)
+            )
+        except Exception:
+            logger.debug("CUDA peak memory report unavailable", exc_info=True)
+    return report
 
 
 def _required_text(request: dict[str, Any], key: str) -> str:

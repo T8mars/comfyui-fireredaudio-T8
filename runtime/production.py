@@ -1,0 +1,727 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+import unicodedata
+import wave
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+
+MANIFEST_VERSION = 1
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def stable_digest(value: Any) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def file_digest(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class VoiceProfile:
+    profile_id: str
+    name: str
+    prompt_audio: str
+    prompt_audio_sha256: str
+    prompt_text: str
+    language: str
+    tags: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["tags"] = list(self.tags)
+        return data
+
+
+@dataclass(frozen=True)
+class VoiceBank:
+    profiles: tuple[VoiceProfile, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "profiles": [profile.to_dict() for profile in self.profiles],
+            "count": len(self.profiles),
+            "digest": stable_digest([profile.to_dict() for profile in self.profiles]),
+        }
+
+    def resolve(self, name: str) -> VoiceProfile | None:
+        key = str(name).strip().casefold()
+        return next((item for item in self.profiles if item.name.casefold() == key), None)
+
+
+@dataclass(frozen=True)
+class ScriptLine:
+    line_id: str
+    index: int
+    speaker: str
+    text: str
+    language: str
+    start_seconds: float | None = None
+    end_seconds: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ScriptPlan:
+    source_format: str
+    lines: tuple[ScriptLine, ...]
+    issues: tuple[dict[str, Any], ...]
+
+    @property
+    def valid(self) -> bool:
+        return not any(item.get("severity") == "error" for item in self.issues)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "source_format": self.source_format,
+            "lines": [line.to_dict() for line in self.lines],
+            "issues": list(self.issues),
+            "valid": self.valid,
+        }
+        payload["digest"] = stable_digest(payload["lines"])
+        return payload
+
+
+@dataclass(frozen=True)
+class AudioBatch:
+    manifest_path: str
+    items: tuple[dict[str, Any], ...]
+
+    def successful_items(self) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in self.items
+            if item.get("status") == "complete" and Path(str(item.get("output_path", ""))).is_file()
+        ]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "manifest_path": self.manifest_path,
+            "items": list(self.items),
+            "complete": len(self.successful_items()),
+            "total": len(self.items),
+        }
+
+
+def create_voice_profile(
+    name: str,
+    prompt_audio: str | Path,
+    prompt_text: str,
+    language: str,
+    tags: str | Iterable[str] = (),
+) -> VoiceProfile:
+    clean_name = str(name).strip()
+    clean_text = str(prompt_text).strip()
+    audio_path = Path(prompt_audio).resolve()
+    if not clean_name:
+        raise ValueError("音色名称不能为空")
+    if not clean_text:
+        raise ValueError("参考音频逐字稿不能为空")
+    if language not in {"zh", "en"}:
+        raise ValueError("音色语言必须是 zh 或 en")
+    if not audio_path.is_file():
+        raise FileNotFoundError(f"参考音频不存在：{audio_path}")
+    if isinstance(tags, str):
+        clean_tags = tuple(item.strip() for item in re.split(r"[,，]", tags) if item.strip())
+    else:
+        clean_tags = tuple(str(item).strip() for item in tags if str(item).strip())
+    audio_sha256 = file_digest(audio_path)
+    profile_id = stable_digest(
+        {
+            "name": clean_name,
+            "audio": audio_sha256,
+            "prompt_text": clean_text,
+            "language": language,
+        }
+    )[:16]
+    return VoiceProfile(
+        profile_id=profile_id,
+        name=clean_name,
+        prompt_audio=str(audio_path),
+        prompt_audio_sha256=audio_sha256,
+        prompt_text=clean_text,
+        language=language,
+        tags=clean_tags,
+    )
+
+
+def create_voice_bank(profiles: Iterable[VoiceProfile]) -> VoiceBank:
+    values = tuple(profiles)
+    if not 1 <= len(values) <= 8:
+        raise ValueError("音色库必须包含 1–8 个音色档案")
+    names: set[str] = set()
+    ids: set[str] = set()
+    for profile in values:
+        if not isinstance(profile, VoiceProfile):
+            raise TypeError("音色库输入必须是 VoiceProfile")
+        key = profile.name.casefold()
+        if key in names:
+            raise ValueError(f"音色名称重复：{profile.name}")
+        if profile.profile_id in ids:
+            raise ValueError(f"音色档案重复：{profile.name}")
+        names.add(key)
+        ids.add(profile.profile_id)
+    return VoiceBank(values)
+
+
+def load_project_exchange(
+    path: str | Path,
+) -> tuple[VoiceBank, ScriptPlan, AudioBatch, dict[str, Any]]:
+    target = Path(path).expanduser().resolve()
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"无法读取桌面项目交换 JSON：{target}") from exc
+    if not isinstance(payload, dict) or payload.get("format") != "t8.firered.project.exchange":
+        raise ValueError("不是 T8 FireRedAudio 项目交换 JSON")
+    if int(payload.get("version") or 0) != 1:
+        raise ValueError(f"不支持的项目交换版本：{payload.get('version')}")
+    project_root = (target.parent / str(payload.get("project_root") or ".")).resolve()
+    raw_profiles = (payload.get("voice_bank") or {}).get("profiles") or []
+    profiles = []
+    for raw in raw_profiles:
+        if not isinstance(raw, dict):
+            raise ValueError("项目交换音色档案必须是 JSON 对象")
+        relative = str(raw.get("prompt_audio") or "").strip()
+        absolute = str(raw.get("prompt_audio_absolute") or "").strip()
+        audio = (project_root / relative).resolve() if relative else Path(absolute).resolve()
+        if not audio.is_file():
+            raise FileNotFoundError(f"项目音色参考音频不存在：{audio}")
+        digest = file_digest(audio)
+        expected = str(raw.get("prompt_audio_sha256") or "").lower()
+        if expected and digest != expected:
+            raise ValueError(f"项目音色参考音频哈希变化：{raw.get('name')}")
+        profiles.append(
+            VoiceProfile(
+                profile_id=str(raw.get("profile_id") or stable_digest(raw)[:16]),
+                name=str(raw.get("name") or "").strip(),
+                prompt_audio=str(audio),
+                prompt_audio_sha256=digest,
+                prompt_text=str(raw.get("prompt_text") or "").strip(),
+                language=str(raw.get("language") or "zh"),
+                tags=tuple(str(item) for item in (raw.get("tags") or [])),
+            )
+        )
+    bank = create_voice_bank(profiles)
+    raw_plan = payload.get("script_plan") or {}
+    lines = tuple(
+        ScriptLine(
+            line_id=str(raw.get("line_id") or stable_digest(raw)[:12]),
+            index=int(raw.get("index") or index + 1),
+            speaker=str(raw.get("speaker") or "旁白"),
+            text=str(raw.get("text") or "").strip(),
+            language=str(raw.get("language") or "zh"),
+            start_seconds=(None if raw.get("start_seconds") is None else float(raw["start_seconds"])),
+            end_seconds=(None if raw.get("end_seconds") is None else float(raw["end_seconds"])),
+        )
+        for index, raw in enumerate(raw_plan.get("lines") or [])
+        if isinstance(raw, dict)
+    )
+    if not lines or any(not line.text for line in lines):
+        raise ValueError("项目交换台词计划为空或含空文本")
+    plan = ScriptPlan(
+        source_format=str(raw_plan.get("source_format") or "desktop-project"),
+        lines=lines,
+        issues=tuple(raw_plan.get("issues") or ()),
+    )
+    batch_items = []
+    for raw in (payload.get("audio_batch") or {}).get("items") or []:
+        if not isinstance(raw, dict):
+            continue
+        relative = str(raw.get("output_path") or "").strip()
+        absolute = str(raw.get("output_path_absolute") or "").strip()
+        output = (project_root / relative).resolve() if relative else Path(absolute).resolve()
+        item = dict(raw)
+        item["output_path"] = str(output)
+        if item.get("status") == "complete" and not output.is_file():
+            item["status"] = "missing"
+            item["error"] = "桌面项目中的 adopted take 文件不存在"
+        batch_items.append(item)
+    batch = AudioBatch(str(target), tuple(batch_items))
+    summary = {
+        "path": str(target),
+        "project": payload.get("project") or {},
+        "voice_profiles": len(bank.profiles),
+        "script_lines": len(plan.lines),
+        "adopted_takes": len(batch.successful_items()),
+    }
+    return bank, plan, batch, summary
+
+
+_TIME_RE = re.compile(
+    r"(?P<start>\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*"
+    r"(?P<end>\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})"
+)
+_INLINE_TIME_RE = re.compile(r"^\s*\[(?P<time>[^]]+-->[^]]+)\]\s*(?P<body>.+)$")
+_SPEAKER_BRACKET_RE = re.compile(r"^\s*\[(?P<speaker>[^]]+)]\s*(?P<text>.*)$")
+_SPEAKER_COLON_RE = re.compile(r"^\s*(?P<speaker>[^:：\t]{1,64})\s*[:：\t]\s*(?P<text>.+)$")
+
+
+def parse_timestamp(value: str) -> float:
+    parts = value.strip().replace(",", ".").split(":")
+    if len(parts) != 3:
+        raise ValueError(f"无效时间码：{value}")
+    hours, minutes, seconds = int(parts[0]), int(parts[1]), float(parts[2])
+    if minutes >= 60 or seconds >= 60:
+        raise ValueError(f"无效时间码：{value}")
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _speaker_and_text(
+    value: str,
+    *,
+    default_speaker: str,
+    known_speakers: set[str],
+    colon_is_speaker: bool,
+) -> tuple[str, str]:
+    bracket = _SPEAKER_BRACKET_RE.match(value)
+    if bracket:
+        return bracket.group("speaker").strip(), bracket.group("text").strip()
+    colon = _SPEAKER_COLON_RE.match(value)
+    if colon:
+        candidate = colon.group("speaker").strip()
+        if colon_is_speaker or candidate.casefold() in known_speakers:
+            return candidate, colon.group("text").strip()
+    return default_speaker.strip(), value.strip()
+
+
+def _line_id_payload(
+    speaker: str,
+    text: str,
+    language: str,
+    start: float | None,
+    end: float | None,
+) -> dict[str, Any]:
+    return {
+        "speaker": speaker,
+        "text": text,
+        "language": language,
+        "start_seconds": start,
+        "end_seconds": end,
+    }
+
+
+def _assign_ids(raw_lines: list[dict[str, Any]]) -> tuple[ScriptLine, ...]:
+    occurrences: dict[str, int] = {}
+    output: list[ScriptLine] = []
+    for index, item in enumerate(raw_lines, 1):
+        payload = _line_id_payload(
+            item["speaker"], item["text"], item["language"], item.get("start_seconds"), item.get("end_seconds")
+        )
+        base = stable_digest(payload)[:12]
+        occurrence = occurrences.get(base, 0) + 1
+        occurrences[base] = occurrence
+        output.append(
+            ScriptLine(
+                line_id=f"{base}-{occurrence}",
+                index=index,
+                speaker=item["speaker"],
+                text=item["text"],
+                language=item["language"],
+                start_seconds=item.get("start_seconds"),
+                end_seconds=item.get("end_seconds"),
+            )
+        )
+    return tuple(output)
+
+
+def _parse_srt(script: str, bank: VoiceBank, default_speaker: str) -> list[dict[str, Any]]:
+    normalized = script.replace("\r\n", "\n").replace("\r", "\n").strip("\ufeff\n ")
+    blocks = re.split(r"\n\s*\n", normalized)
+    names = {item.name.casefold() for item in bank.profiles}
+    output: list[dict[str, Any]] = []
+    for block in blocks:
+        rows = [row.strip() for row in block.splitlines() if row.strip()]
+        if rows and rows[0].isdigit():
+            rows.pop(0)
+        if not rows:
+            continue
+        match = _TIME_RE.fullmatch(rows[0])
+        if not match:
+            raise ValueError(f"SRT 字幕块缺少合法时间码：{block[:80]}")
+        rows.pop(0)
+        body = " ".join(rows).strip()
+        speaker, text = _speaker_and_text(
+            body,
+            default_speaker=default_speaker,
+            known_speakers=names,
+            colon_is_speaker=False,
+        )
+        profile = bank.resolve(speaker)
+        output.append(
+            {
+                "speaker": speaker,
+                "text": text,
+                "language": profile.language if profile else "zh",
+                "start_seconds": parse_timestamp(match.group("start")),
+                "end_seconds": parse_timestamp(match.group("end")),
+            }
+        )
+    return output
+
+
+def _parse_role_script(script: str, bank: VoiceBank, default_speaker: str) -> list[dict[str, Any]]:
+    names = {item.name.casefold() for item in bank.profiles}
+    output: list[dict[str, Any]] = []
+    for source_index, raw in enumerate(script.replace("\r", "").splitlines(), 1):
+        value = raw.strip()
+        if not value or value.startswith("#"):
+            continue
+        start = end = None
+        inline = _INLINE_TIME_RE.match(value)
+        if inline:
+            time_match = _TIME_RE.fullmatch(inline.group("time").strip())
+            if not time_match:
+                raise ValueError(f"第 {source_index} 行时间码无效")
+            start = parse_timestamp(time_match.group("start"))
+            end = parse_timestamp(time_match.group("end"))
+            value = inline.group("body")
+        speaker, text = _speaker_and_text(
+            value,
+            default_speaker=default_speaker,
+            known_speakers=names,
+            colon_is_speaker=True,
+        )
+        profile = bank.resolve(speaker)
+        output.append(
+            {
+                "speaker": speaker,
+                "text": text,
+                "language": profile.language if profile else "zh",
+                "start_seconds": start,
+                "end_seconds": end,
+            }
+        )
+    return output
+
+
+def _parse_json_script(script: str, bank: VoiceBank, default_speaker: str) -> list[dict[str, Any]]:
+    parsed = json.loads(script)
+    if isinstance(parsed, dict):
+        parsed = parsed.get("lines")
+    if not isinstance(parsed, list):
+        raise ValueError("JSON 脚本必须是数组或包含 lines 数组的对象")
+    output: list[dict[str, Any]] = []
+    for index, item in enumerate(parsed, 1):
+        if not isinstance(item, dict):
+            raise ValueError(f"JSON 第 {index} 项必须是对象")
+        speaker = str(item.get("speaker") or default_speaker).strip()
+        profile = bank.resolve(speaker)
+        start = item.get("start_seconds", item.get("start"))
+        end = item.get("end_seconds", item.get("end"))
+        output.append(
+            {
+                "speaker": speaker,
+                "text": str(item.get("text") or "").strip(),
+                "language": str(item.get("language") or (profile.language if profile else "zh")),
+                "start_seconds": float(start) if start is not None else None,
+                "end_seconds": float(end) if end is not None else None,
+            }
+        )
+    return output
+
+
+def parse_script(
+    script: str,
+    source_format: str,
+    bank: VoiceBank,
+    default_speaker: str = "",
+) -> ScriptPlan:
+    if not isinstance(bank, VoiceBank):
+        raise TypeError("脚本预检必须连接音色库")
+    content = str(script).strip()
+    if not content:
+        raise ValueError("脚本不能为空")
+    fallback = default_speaker.strip() or bank.profiles[0].name
+    fmt = source_format
+    if fmt == "auto":
+        stripped = content.lstrip()
+        if stripped.startswith("{") or stripped.startswith("[") and not _INLINE_TIME_RE.match(stripped):
+            try:
+                json.loads(content)
+                fmt = "json"
+            except json.JSONDecodeError:
+                fmt = "srt" if any(_TIME_RE.fullmatch(row.strip()) for row in content.splitlines()) else "role_script"
+        else:
+            fmt = "srt" if any(_TIME_RE.fullmatch(row.strip()) for row in content.splitlines()) else "role_script"
+    if fmt == "srt":
+        raw_lines = _parse_srt(content, bank, fallback)
+    elif fmt == "role_script":
+        raw_lines = _parse_role_script(content, bank, fallback)
+    elif fmt == "json":
+        raw_lines = _parse_json_script(content, bank, fallback)
+    else:
+        raise ValueError(f"不支持的脚本格式：{source_format}")
+    lines = _assign_ids(raw_lines)
+    issues: list[dict[str, Any]] = []
+    previous_timed: ScriptLine | None = None
+    for line in lines:
+        if not line.text:
+            issues.append({"severity": "error", "line_id": line.line_id, "message": "台词为空"})
+        if bank.resolve(line.speaker) is None:
+            issues.append(
+                {"severity": "error", "line_id": line.line_id, "message": f"音色库中没有角色：{line.speaker}"}
+            )
+        if line.language not in {"zh", "en"}:
+            issues.append(
+                {"severity": "error", "line_id": line.line_id, "message": f"不支持的语言：{line.language}"}
+            )
+        if (line.start_seconds is None) != (line.end_seconds is None):
+            issues.append({"severity": "error", "line_id": line.line_id, "message": "开始和结束时间必须同时提供"})
+        if line.start_seconds is not None and line.end_seconds is not None:
+            if line.start_seconds < 0 or line.end_seconds <= line.start_seconds:
+                issues.append({"severity": "error", "line_id": line.line_id, "message": "时间范围无效"})
+            if previous_timed and line.start_seconds < float(previous_timed.start_seconds or 0):
+                issues.append({"severity": "error", "line_id": line.line_id, "message": "时间码不是递增顺序"})
+            elif previous_timed and line.start_seconds < float(previous_timed.end_seconds or 0):
+                issues.append({"severity": "warning", "line_id": line.line_id, "message": "时间范围与上一条重叠"})
+            previous_timed = line
+    if not lines:
+        issues.append({"severity": "error", "line_id": "", "message": "脚本中没有可生成的台词"})
+    return ScriptPlan(fmt, lines, tuple(issues))
+
+
+def line_fingerprint(
+    line: ScriptLine,
+    profile: VoiceProfile,
+    settings: dict[str, Any],
+    model_identity: str,
+) -> str:
+    return stable_digest(
+        {
+            "line": line.to_dict(),
+            "profile": profile.to_dict(),
+            "settings": settings,
+            "model": model_identity,
+        }
+    )
+
+
+def load_manifest(path: str | Path) -> dict[str, Any] | None:
+    target = Path(path)
+    if not target.is_file():
+        return None
+    try:
+        value = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"批量配音 manifest 损坏：{target}") from exc
+    if not isinstance(value, dict) or value.get("manifest_version") != MANIFEST_VERSION:
+        raise ValueError(f"不支持的批量配音 manifest：{target}")
+    return value
+
+
+def write_manifest(path: str | Path, payload: dict[str, Any]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(target)
+
+
+def manifest_items_by_id(manifest: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not manifest:
+        return {}
+    return {
+        str(item.get("line_id")): item
+        for item in manifest.get("items", [])
+        if isinstance(item, dict) and item.get("line_id")
+    }
+
+
+def can_reuse_manifest_item(
+    item: dict[str, Any] | None,
+    expected_fingerprint: str,
+    expected_output: str | Path,
+) -> bool:
+    if not item or item.get("status") != "complete" or item.get("fingerprint") != expected_fingerprint:
+        return False
+    expected = Path(expected_output).resolve()
+    recorded_value = item.get("output_path")
+    if not recorded_value:
+        return False
+    try:
+        recorded = Path(str(recorded_value)).resolve()
+    except OSError:
+        return False
+    return recorded == expected and expected.is_file()
+
+
+def _read_wav_tensor(path: str | Path):
+    import torch
+
+    with wave.open(str(path), "rb") as reader:
+        if reader.getsampwidth() != 2:
+            raise ValueError(f"仅支持 PCM16 WAV：{path}")
+        channels = reader.getnchannels()
+        sample_rate = reader.getframerate()
+        frames = reader.readframes(reader.getnframes())
+    tensor = torch.frombuffer(bytearray(frames), dtype=torch.int16).clone()
+    tensor = tensor.reshape(-1, channels).transpose(0, 1).float() / 32768.0
+    return tensor, sample_rate
+
+
+def _resample_linear(audio, source_rate: int, target_rate: int):
+    if source_rate == target_rate:
+        return audio
+    import torch.nn.functional as functional
+
+    length = max(1, round(audio.shape[-1] * target_rate / source_rate))
+    return functional.interpolate(audio.unsqueeze(0), size=length, mode="linear", align_corners=False).squeeze(0)
+
+
+def render_timeline_to_wav(
+    items: Iterable[dict[str, Any]],
+    output_path: str | Path,
+    *,
+    mode: str = "timeline",
+    gap_ms: int = 120,
+    peak_policy: str = "limit",
+    sample_rate: int = 24000,
+) -> dict[str, Any]:
+    import torch
+
+    values = [item for item in items if item.get("status") == "complete" and Path(str(item.get("output_path", ""))).is_file()]
+    if not values:
+        raise ValueError("没有可渲染的成功音频")
+    if mode not in {"sequence", "timeline", "overlay"}:
+        raise ValueError(f"不支持的时间线模式：{mode}")
+    if peak_policy not in {"limit", "clip", "none"}:
+        raise ValueError(f"不支持的峰值策略：{peak_policy}")
+    decoded: list[tuple[dict[str, Any], Any, int]] = []
+    channels = 1
+    for item in values:
+        audio, source_rate = _read_wav_tensor(item["output_path"])
+        audio = _resample_linear(audio, source_rate, sample_rate)
+        channels = max(channels, int(audio.shape[0]))
+        decoded.append((item, audio, source_rate))
+    placements: list[dict[str, Any]] = []
+    render_entries: list[tuple[Any, int]] = []
+    cursor = 0
+    gap_samples = round(max(0, gap_ms) * sample_rate / 1000)
+    max_end = 0
+    for item, audio, source_rate in decoded:
+        if audio.shape[0] == 1 and channels > 1:
+            audio = audio.repeat(channels, 1)
+        elif audio.shape[0] != channels:
+            raise ValueError("时间线音频声道数不兼容")
+        if mode == "overlay":
+            offset = 0
+        elif mode == "timeline" and item.get("start_seconds") is not None:
+            offset = round(max(0.0, float(item["start_seconds"])) * sample_rate)
+        else:
+            offset = cursor
+        end = offset + audio.shape[-1]
+        cue_end = item.get("end_seconds")
+        placements.append(
+            {
+                "line_id": item.get("line_id"),
+                "speaker": item.get("speaker"),
+                "offset_seconds": offset / sample_rate,
+                "duration_seconds": audio.shape[-1] / sample_rate,
+                "source_sample_rate": source_rate,
+                "cue_overrun_seconds": (
+                    max(0.0, end / sample_rate - float(cue_end)) if mode == "timeline" and cue_end is not None else 0.0
+                ),
+            }
+        )
+        render_entries.append((audio, offset))
+        cursor = end + gap_samples
+        max_end = max(max_end, end)
+    mixed = torch.zeros((channels, max_end), dtype=torch.float32)
+    for audio, offset in render_entries:
+        mixed[:, offset : offset + audio.shape[-1]] += audio
+    peak_before = float(mixed.abs().max().item()) if mixed.numel() else 0.0
+    gain = 1.0
+    if peak_policy == "limit" and peak_before > 0.98:
+        gain = 0.98 / peak_before
+        mixed.mul_(gain)
+    clipped_samples = int((mixed.abs() > 1.0).sum().item())
+    if peak_policy in {"limit", "clip"}:
+        mixed.clamp_(-1.0, 1.0)
+    pcm = (mixed.clamp(-1.0, 1.0) * 32767.0).round().to(torch.int16).transpose(0, 1).contiguous()
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(target), "wb") as writer:
+        writer.setnchannels(channels)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(pcm.numpy().tobytes())
+    return {
+        "mode": mode,
+        "output_path": str(target),
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "duration_seconds": max_end / sample_rate,
+        "peak_before": peak_before,
+        "applied_gain": gain,
+        "clipped_samples_before_write": clipped_samples,
+        "placements": placements,
+    }
+
+
+def normalize_text(value: str, language: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", str(value)).casefold()
+    if language == "en":
+        return re.findall(r"[a-z0-9']+", normalized)
+    return [character for character in normalized if not character.isspace() and not unicodedata.category(character).startswith("P")]
+
+
+def edit_distance(reference: list[str], hypothesis: list[str]) -> int:
+    previous = list(range(len(hypothesis) + 1))
+    for row, reference_token in enumerate(reference, 1):
+        current = [row]
+        for column, hypothesis_token in enumerate(hypothesis, 1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[column] + 1,
+                    previous[column - 1] + (reference_token != hypothesis_token),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def text_error_rate(reference: str, hypothesis: str, language: str) -> tuple[str, float]:
+    expected = normalize_text(reference, language)
+    actual = normalize_text(hypothesis, language)
+    metric = "wer" if language == "en" else "cer"
+    if not expected:
+        return metric, 0.0 if not actual else 1.0
+    return metric, edit_distance(expected, actual) / len(expected)
+
+
+def wav_metrics(path: str | Path) -> dict[str, Any]:
+    import torch
+
+    audio, sample_rate = _read_wav_tensor(path)
+    absolute = audio.abs()
+    duration = audio.shape[-1] / sample_rate
+    rms = float(torch.sqrt(torch.mean(audio.square())).item()) if audio.numel() else 0.0
+    peak = float(absolute.max().item()) if audio.numel() else 0.0
+    clipping_ratio = float((absolute >= 32760 / 32768).float().mean().item()) if audio.numel() else 0.0
+    silence_ratio = float((absolute <= 10 ** (-50 / 20)).float().mean().item()) if audio.numel() else 1.0
+    return {
+        "sample_rate": sample_rate,
+        "channels": int(audio.shape[0]),
+        "duration_seconds": duration,
+        "rms_dbfs": 20 * math.log10(max(rms, 1e-12)),
+        "peak": peak,
+        "clipping_ratio": clipping_ratio,
+        "silence_ratio": silence_ratio,
+    }
