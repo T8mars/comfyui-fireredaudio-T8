@@ -1,0 +1,50 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-compatibility:
+    name: Python ${{ matrix.python }} / host Transformers ${{ matrix.transformers }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.10"
+            transformers: "4.52.1"
+          - python: "3.12"
+            transformers: "4.57.6"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install host compatibility dependency only
+        run: python -m pip install transformers==${{ matrix.transformers }}
+      - name: Verify package metadata and sources
+        shell: pwsh
+        run: |
+          python -m compileall -q .
+          python -c "import tomllib, pathlib; tomllib.loads(pathlib.Path('pyproject.toml').read_text('utf-8'))"
+          Get-ChildItem example_workflows -Recurse -Filter *.json | ForEach-Object { python -m json.tool $_.FullName | Out-Null }
+      - name: Prove host requirements remain dependency-free
+        shell: pwsh
+        run: |
+          $active = Get-Content requirements.txt | Where-Object { $_.Trim() -and -not $_.TrimStart().StartsWith('#') }
+          if ($active) { throw 'requirements.txt must not mutate the ComfyUI host environment' }
+
+  registry-metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install comfy-cli==1.16.0
+      - run: comfy node validate

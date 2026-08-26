@@ -1,0 +1,65 @@
+{
+  "1": {
+    "class_type": "T8_FireRedAudio_ModelLoader",
+    "inputs": {
+      "model_name": "FireRedAudio",
+      "custom_model_path": "",
+      "device": "cuda:0",
+      "memory_mode": "auto",
+      "profile": "full",
+      "worker_mode": "managed",
+      "runtime_python": "",
+      "worker_url": "",
+      "worker_token": "",
+      "verify_hashes": false,
+      "release_after_run": false
+    }
+  },
+  "2": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "voice_reference.wav"
+    }
+  },
+  "3": {
+    "class_type": "T8_FireRedAudio_GenerationSettings",
+    "inputs": {
+      "quality_preset": "balanced",
+      "seed": 42,
+      "max_new_audio_steps": 750,
+      "min_new_audio_steps": 6,
+      "max_new_text_tokens": 512,
+      "n_timesteps": 10,
+      "inference_cfg": 2.0
+    }
+  },
+  "4": {
+    "class_type": "T8_FireRedAudio_SpeechEdit",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "audio": [
+        "2",
+        0
+      ],
+      "instruction": "adjust the speed to 1.2",
+      "edit_type": "acoustic",
+      "settings": [
+        "3",
+        0
+      ]
+    }
+  },
+  "5": {
+    "class_type": "SaveAudio",
+    "inputs": {
+      "audio": [
+        "4",
+        0
+      ],
+      "filename_prefix": "fireredaudio/edit"
+    }
+  }
+}

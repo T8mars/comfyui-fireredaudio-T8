@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "codeRepository": "FireRedTeam/FireRedAudio",
+  "codeRevision": "88b826378023eb9a49b297214568398a300e5c32",
+  "modelRepository": "FireRedTeam/FireRedAudio",
+  "modelRevision": "3abf43d7539a2fc05991b9f89295c892f0a034f0",
+  "license": "Apache-2.0",
+  "profiles": {
+    "lite": {
+      "description": "ASR and audio understanding",
+      "requiredBytes": 21247431443
+    },
+    "full": {
+      "description": "ASR, understanding, TTS, voice design, and speech editing",
+      "requiredBytes": 29650289609
+    }
+  },
+  "files": {
+    "FireRedAudio/config.json": {
+      "size": 4606,
+      "sha256": "c178de5e117f5da095db94d036cb2c9f20aa6779c2a7bdc679edd5f8237c67bb"
+    },
+    "FireRedAudio/model-00001-of-00005.safetensors": {
+      "size": 3368115912,
+      "sha256": "e15d9fc56c013769ed761c6a7a03ffe0d8a098aea95b4fa09b903ceb41ba4256"
+    },
+    "FireRedAudio/model-00002-of-00005.safetensors": {
+      "size": 4973912528,
+      "sha256": "486f1f1d3c80cfc733084c95842605aec007a97bc5a43e48a593552861e6c418"
+    },
+    "FireRedAudio/model-00003-of-00005.safetensors": {
+      "size": 4988367272,
+      "sha256": "ed08598bb7040daa33f3f9f91c8d899eee01a94406d02aa7ae748b0f0e50706f"
+    },
+    "FireRedAudio/model-00004-of-00005.safetensors": {
+      "size": 4954204904,
+      "sha256": "d2d476dc2024bf8a724fd46ec974ca8dd24db80b4e2142eda53f0c50549adc83"
+    },
+    "FireRedAudio/model-00005-of-00005.safetensors": {
+      "size": 2942690408,
+      "sha256": "443c158f6573595eeb3e6be53976445f1f4fcd3a538463faa22efc871029b4b4"
+    },
+    "FireRedAudio/model.safetensors.index.json": {
+      "size": 141169,
+      "sha256": "585856522d7540d79aebf96ffeeddcbfd60a8993dc6368ca8b92ba6d97be95cf"
+    },
+    "FireRedAudio/processor_config.json": {
+      "size": 417,
+      "sha256": "d70de266134c9ea73233d18f3ab3b3dcd9c60b5686a84259b1f12580e1624a2b"
+    },
+    "FireRedAudio/tokenizer.json": {
+      "size": 19993078,
+      "sha256": "858cf32246e699cef49c00afe947043f2ad1660dbe0484732912c74365d21069"
+    },
+    "FireRedAudio/tokenizer_config.json": {
+      "size": 1149,
+      "sha256": "03cc9e281c0d8929070e462ccdd9399ba4a7830847df1b467a0f1ddf027a23a1"
+    },
+    "RedAE_decoder/model.pt": {
+      "size": 8402858166,
+      "sha256": "020b4d5eb7bcf3dbca1133023f6a62366cc213491bbb5f334b8691e2949e0152"
+    }
+  }
+}

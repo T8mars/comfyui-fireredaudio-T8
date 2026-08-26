@@ -1,0 +1,496 @@
+from __future__ import annotations
+
+import gc
+import hashlib
+import importlib.metadata
+import json
+import logging
+import threading
+import time
+import tempfile
+import uuid
+from datetime import datetime, timezone
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+from .constants import ALL_TASKS, CODE_REVISION, MODEL_REVISION, RUNTIME_VERSION
+from .audio_inputs import prepare_audio_path
+from .errors import TaskCancelledError, WorkerProtocolError
+from .long_audio import render_srt, split_pcm16_wav
+from .model_manager import model_paths, normalize_model_root, profile_for_task, validate_model_dir
+from .presets import apply_quality_preset
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RuntimeState:
+    loaded: bool = False
+    model_root: str | None = None
+    device: str | None = None
+    decoder_loaded: bool = False
+    memory_mode: str | None = None
+    loading: bool = False
+    active_task: str | None = None
+    active_task_id: str | None = None
+    phase: str = "idle"
+    progress: float = 0.0
+    progress_message: str | None = None
+    cancel_requested: bool = False
+    completed_tasks: int = 0
+    last_error: str | None = None
+
+
+def _package_version(name: str) -> str | None:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+class FireRedAudioRuntime:
+    """Owns exactly one upstream inference engine and serializes access to it."""
+
+    def __init__(self) -> None:
+        self._engine: Any | None = None
+        self._lock = threading.RLock()
+        self._state_lock = threading.RLock()
+        self._cancel_event = threading.Event()
+        self._state = RuntimeState()
+
+    def status(self) -> dict[str, Any]:
+        # Status must remain readable while the model lock is held by a long inference.
+        with self._state_lock:
+            data = asdict(self._state)
+        data.update(
+            {
+                "runtime_version": RUNTIME_VERSION,
+                "code_revision": CODE_REVISION,
+                "model_revision": MODEL_REVISION,
+                "packages": {
+                    name: _package_version(name)
+                    for name in (
+                        "torch",
+                        "torchaudio",
+                        "torchcodec",
+                        "transformers",
+                        "numpy",
+                        "einops",
+                        "flash-attn",
+                        "flash-linear-attention",
+                        "liger-kernel",
+                    )
+                },
+            }
+        )
+        return data
+
+    def _update_state(self, **changes: Any) -> None:
+        with self._state_lock:
+            for key, value in changes.items():
+                setattr(self._state, key, value)
+
+    def _progress(self, phase: str, progress: float, message: str) -> None:
+        self._update_state(
+            phase=phase,
+            progress=max(0.0, min(1.0, float(progress))),
+            progress_message=message,
+        )
+
+    def _check_cancel(self) -> None:
+        if self._cancel_event.is_set():
+            raise TaskCancelledError("任务已由用户取消")
+
+    def cancel(self, task_id: str | None = None) -> dict[str, Any]:
+        """Signal cancellation without waiting for the long-running model lock."""
+        with self._state_lock:
+            active_id = self._state.active_task_id
+            active_task = self._state.active_task
+            if active_task is None:
+                return {"cancel_requested": False, "reason": "当前没有运行中的任务"}
+            if task_id and active_id and str(task_id) != active_id:
+                return {
+                    "cancel_requested": False,
+                    "reason": "task_id 与当前任务不匹配",
+                    "active_task_id": active_id,
+                }
+            self._state.cancel_requested = True
+            self._state.phase = "cancelling"
+            self._state.progress_message = "正在取消任务"
+        self._cancel_event.set()
+        return {
+            "cancel_requested": True,
+            "active_task": active_task,
+            "active_task_id": active_id,
+        }
+
+    def _load(
+        self,
+        model_root: str | Path,
+        device: str,
+        require_decoder: bool,
+        memory_mode: str = "auto",
+    ) -> None:
+        root = normalize_model_root(model_root)
+        profile = "full" if require_decoder else "lite"
+        validate_model_dir(root, profile=profile).require_valid()
+        requested_root = str(root)
+        resolved_memory_mode = _resolve_memory_mode(memory_mode, device, require_decoder)
+        if (
+            self._engine is not None
+            and self._state.model_root == requested_root
+            and self._state.device == device
+            and (
+                self._state.memory_mode == resolved_memory_mode
+                or (not require_decoder and self._state.decoder_loaded)
+            )
+            and (self._state.decoder_loaded or not require_decoder)
+        ):
+            return
+
+        self._unload_locked()
+        self._update_state(loading=True, last_error=None)
+        try:
+            from inference import FireRedAudioInference
+
+            main_model, decoder = model_paths(root)
+            self._engine = FireRedAudioInference(
+                model_path=str(main_model),
+                vae_decoder_path=str(decoder) if require_decoder else None,
+                device=device,
+                memory_mode=resolved_memory_mode,
+            )
+            self._update_state(
+                loaded=True,
+                model_root=requested_root,
+                device=device,
+                decoder_loaded=require_decoder,
+                memory_mode=resolved_memory_mode,
+            )
+        except Exception as exc:
+            self._update_state(last_error=str(exc))
+            self._unload_locked(preserve_error=True)
+            raise
+        finally:
+            self._update_state(loading=False)
+
+    def load(
+        self,
+        model_root: str | Path,
+        *,
+        device: str = "cuda:0",
+        profile: str = "full",
+        memory_mode: str = "auto",
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._load(model_root, device, profile == "full", memory_mode)
+            return self.status()
+
+    def unload(self) -> dict[str, Any]:
+        with self._lock:
+            self._unload_locked()
+            return self.status()
+
+    def _unload_locked(self, preserve_error: bool = False) -> None:
+        with self._state_lock:
+            previous_error = self._state.last_error if preserve_error else None
+            completed_tasks = self._state.completed_tasks
+            active = {
+                "active_task": self._state.active_task,
+                "active_task_id": self._state.active_task_id,
+                "phase": self._state.phase,
+                "progress": self._state.progress,
+                "progress_message": self._state.progress_message,
+                "cancel_requested": self._state.cancel_requested,
+            } if self._state.active_task is not None else {}
+        self._engine = None
+        with self._state_lock:
+            self._state = RuntimeState(
+                last_error=previous_error,
+                completed_tasks=completed_tasks,
+                **active,
+            )
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+        except Exception:
+            logger.debug("CUDA cache cleanup was unavailable", exc_info=True)
+
+    def infer(self, request: dict[str, Any]) -> dict[str, Any]:
+        request = apply_quality_preset(request)
+        task = str(request.get("task", "")).strip()
+        if task not in ALL_TASKS:
+            raise WorkerProtocolError(f"不支持的任务：{task!r}")
+        model_root = request.get("model_root")
+        if not model_root:
+            raise WorkerProtocolError("缺少 model_root")
+        device = str(request.get("device") or "cuda:0")
+        memory_mode = str(request.get("memory_mode") or "auto")
+        release_after = bool(request.get("release_after", False))
+        task_id = str(request.get("task_id") or uuid.uuid4())
+        started = time.perf_counter()
+
+        with self._lock:
+            self._cancel_event.clear()
+            self._update_state(
+                active_task=task,
+                active_task_id=task_id,
+                phase="validating",
+                progress=0.01,
+                progress_message="正在校验模型与任务参数",
+                cancel_requested=False,
+                last_error=None,
+            )
+            try:
+                self._check_cancel()
+                self._progress("loading", 0.02, "正在加载模型")
+                self._load(
+                    model_root,
+                    device,
+                    profile_for_task(task) == "full",
+                    memory_mode,
+                )
+                self._check_cancel()
+                if hasattr(self._engine, "set_task_callbacks"):
+                    self._engine.set_task_callbacks(self._check_cancel, self._progress)
+                self._progress("running", 0.04, "模型就绪，开始推理")
+                result = self._run_task(task, request)
+                self._check_cancel()
+                with self._state_lock:
+                    self._state.completed_tasks += 1
+                self._progress("complete", 1.0, "任务完成")
+                result["task"] = task
+                result["task_id"] = task_id
+                result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+                result["device"] = device
+                result["code_revision"] = CODE_REVISION
+                result["model_revision"] = MODEL_REVISION
+                result["quality_preset"] = request["quality_preset"]
+                return result
+            except Exception as exc:
+                if isinstance(exc, TaskCancelledError):
+                    self._progress("cancelled", self._state.progress, "任务已取消")
+                else:
+                    self._progress("failed", self._state.progress, "任务失败")
+                self._update_state(last_error=str(exc))
+                raise
+            finally:
+                if self._engine is not None and hasattr(self._engine, "set_task_callbacks"):
+                    self._engine.set_task_callbacks()
+                self._update_state(
+                    active_task=None,
+                    active_task_id=None,
+                    cancel_requested=False,
+                )
+                self._cancel_event.clear()
+                if release_after:
+                    self._unload_locked(preserve_error=True)
+
+    def _run_task(self, task: str, request: dict[str, Any]) -> dict[str, Any]:
+        assert self._engine is not None
+        self._check_cancel()
+        seed = request.get("seed")
+        if seed is not None and seed != "":
+            from inference import set_seed
+
+            set_seed(int(seed))
+
+        if task == "long_asr":
+            audio_path = request.get("audio_path")
+            if not audio_path:
+                raise WorkerProtocolError("长音频 ASR 缺少 audio_path")
+            prepared = prepare_audio_path(audio_path)
+            prompt = str(request.get("prompt") or "Transcribe speech to text.")
+            chunk_seconds = float(request.get("chunk_seconds", 30.0))
+            overlap_seconds = float(request.get("overlap_seconds", 1.0))
+            with tempfile.TemporaryDirectory(prefix="fireredaudio-t8-long-asr-") as temp_dir:
+                chunks, duration = split_pcm16_wav(
+                    prepared,
+                    temp_dir,
+                    chunk_seconds=chunk_seconds,
+                    overlap_seconds=overlap_seconds,
+                )
+                public_segments: list[dict[str, object]] = []
+                total = max(1, len(chunks))
+                for index, chunk in enumerate(chunks):
+                    self._check_cancel()
+                    if hasattr(self._engine, "set_task_callbacks"):
+                        self._engine.set_task_callbacks(
+                            self._check_cancel,
+                            lambda phase, local, message, i=index: self._progress(
+                                f"segment_{i + 1}_{phase}",
+                                0.05 + 0.9 * (i + local) / total,
+                                f"分段 {i + 1}/{total}：{message}",
+                            ),
+                        )
+                    result = self._engine.understand(
+                        chunk.path,
+                        prompt,
+                        task="asr",
+                        enable_thinking=False,
+                        max_new_tokens=_optional_int(request.get("max_new_tokens")),
+                    )
+                    public_segments.append(chunk.public_dict(result.answer.strip()))
+                    self._progress(
+                        "long_asr",
+                        0.05 + 0.9 * (index + 1) / total,
+                        f"已完成 {index + 1}/{total} 个分段",
+                    )
+            transcript = "\n".join(
+                str(segment["text"]) for segment in public_segments if segment["text"]
+            )
+            return {
+                "answer": transcript,
+                "segments": public_segments,
+                "srt": render_srt(public_segments),
+                "duration_seconds": round(duration, 3),
+                "chunk_seconds": chunk_seconds,
+                "overlap_seconds": overlap_seconds,
+            }
+
+        if task in {"asr", "understand"}:
+            audio_paths = request.get("audio_paths") or request.get("audio_path")
+            if not audio_paths:
+                raise WorkerProtocolError("ASR/音频理解缺少 audio_paths")
+            if isinstance(audio_paths, (str, Path)):
+                audio_paths = prepare_audio_path(audio_paths)
+            else:
+                audio_paths = [prepare_audio_path(item) for item in audio_paths]
+            self._check_cancel()
+            prompt = str(request.get("prompt") or "Transcribe speech to text.")
+            result = self._engine.understand(
+                audio_paths,
+                prompt,
+                task=task,
+                enable_thinking=bool(request.get("enable_thinking", False)),
+                max_new_tokens=_optional_int(request.get("max_new_tokens")),
+            )
+            return {"answer": result.answer, "reasoning": result.reasoning}
+
+        output_path = _validated_output_path(request.get("output_path"))
+        common = {
+            "max_new_audio_steps": int(request.get("max_new_audio_steps", 750)),
+            "min_new_audio_steps": int(request.get("min_new_audio_steps", 6)),
+            "max_new_text_tokens": int(request.get("max_new_text_tokens", 512)),
+            "n_timesteps": int(request.get("n_timesteps", 10)),
+            "inference_cfg": float(request.get("inference_cfg", 2.0)),
+        }
+        if task == "tts":
+            result = self._engine.tts(
+                prompt_text=_required_text(request, "prompt_text"),
+                prompt_audio=prepare_audio_path(_required_text(request, "prompt_audio")),
+                target_text=_required_text(request, "target_text"),
+                language=str(request.get("language") or "zh"),
+                **common,
+            )
+        elif task == "edit":
+            result = self._engine.edit(
+                audio_path=prepare_audio_path(_required_text(request, "audio_path")),
+                instruction=_required_text(request, "instruction"),
+                edit_type=str(request.get("edit_type") or "semantic"),
+                **common,
+            )
+        else:
+            result = self._engine.voice_design(
+                instruction=_required_text(request, "instruction"),
+                text=_required_text(request, "text"),
+                **common,
+            )
+        _save_audio(output_path, result.audio)
+        self._check_cancel()
+        metadata_path = _write_output_metadata(output_path, task, request)
+        response: dict[str, Any] = {
+            "output_path": str(output_path),
+            "metadata_path": str(metadata_path),
+            "sample_rate": 24_000,
+        }
+        if getattr(result, "text", None) is not None:
+            response["text"] = result.text
+        return response
+
+
+def _save_audio(path: Path, audio: Any) -> None:
+    from fireredaudio.utils.audio import write_pcm16_wav
+
+    write_pcm16_wav(str(path), audio, 24_000)
+
+
+def _write_output_metadata(path: Path, task: str, request: dict[str, Any]) -> Path:
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    safe_keys = (
+        "task_id",
+        "quality_preset",
+        "device",
+        "memory_mode",
+        "seed",
+        "language",
+        "edit_type",
+        "max_new_audio_steps",
+        "min_new_audio_steps",
+        "max_new_text_tokens",
+        "n_timesteps",
+        "inference_cfg",
+    )
+    metadata = {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "task": task,
+        "output_file": path.name,
+        "output_sha256": digest,
+        "sample_rate": 24_000,
+        "runtime_version": RUNTIME_VERSION,
+        "code_revision": CODE_REVISION,
+        "model_revision": MODEL_REVISION,
+        "settings": {key: request[key] for key in safe_keys if key in request},
+        "privacy": "Prompt text and input paths are intentionally omitted.",
+    }
+    target = path.with_suffix(path.suffix + ".json")
+    target.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    return target
+
+
+def _required_text(request: dict[str, Any], key: str) -> str:
+    value = str(request.get(key) or "").strip()
+    if not value:
+        raise WorkerProtocolError(f"缺少 {key}")
+    return value
+
+
+def _validated_output_path(value: Any) -> Path:
+    if not value:
+        raise WorkerProtocolError("生成任务缺少 output_path")
+    target = Path(str(value)).expanduser().resolve()
+    if target.suffix.lower() != ".wav":
+        raise WorkerProtocolError("output_path 必须使用 .wav 后缀")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+def _resolve_memory_mode(requested: str, device: str, require_decoder: bool) -> str:
+    if not require_decoder:
+        return "full_gpu"
+    if requested in {"full_gpu", "sequential", "decoder_cpu"}:
+        return requested
+    if requested != "auto":
+        raise WorkerProtocolError("memory_mode 必须是 auto/full_gpu/sequential/decoder_cpu")
+    if not str(device).startswith("cuda"):
+        return "decoder_cpu"
+    try:
+        import torch
+
+        index = torch.device(device).index or 0
+        total = torch.cuda.get_device_properties(index).total_memory
+        return "sequential" if total < 36 * 1024**3 else "full_gpu"
+    except Exception:
+        return "sequential"

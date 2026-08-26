@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfyui-fireredaudio-t8"
+version = "0.2.0"
+description = "ComfyUI V3 nodes for FireRedAudio using an isolated Transformers 5.8 worker"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "T8star-Aix" }]
+keywords = ["comfyui", "fireredaudio", "tts", "asr", "audio", "voice-cloning"]
+classifiers = [
+  "Environment :: GPU :: NVIDIA CUDA",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/T8mars/comfyui-fireredaudio-T8"
+Documentation = "https://github.com/T8mars/comfyui-fireredaudio-T8#readme"
+"Bug Tracker" = "https://github.com/T8mars/comfyui-fireredaudio-T8/issues"
+Upstream = "https://github.com/FireRedTeam/FireRedAudio"
+Model = "https://huggingface.co/FireRedTeam/FireRedAudio"
+
+[tool.comfy]
+PublisherId = "t8star"
+DisplayName = "FireRedAudio · T8star-Aix"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

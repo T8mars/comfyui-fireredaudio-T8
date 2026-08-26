@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "worker": {
+    "python": "3.10.x",
+    "torch": "2.11.0",
+    "torchaudio": "2.11.0",
+    "torchcodec": "0.11.1 (non-Windows only; no win_amd64 wheel)",
+    "transformers": "5.8.0",
+    "numpy": "2.2.6",
+    "einops": "0.8.2",
+    "cudaWheelChannel": "cu128",
+    "windowsAudioDecode": "stdlib PCM16 WAV fast path plus bundled ffmpeg-static transcoding"
+  },
+  "comfyuiHost": {
+    "strategy": "out-of-process",
+    "installedDependencies": [],
+    "mustNotModify": ["torch", "torchaudio", "torchcodec", "transformers", "numpy"],
+    "knownTargetTransformers": ["4.52.1", "4.57.6", "5.x"]
+  },
+  "acceleration": {
+    "default": "sdpa",
+    "optional": {
+      "flash-linear-attention": "0.5.0",
+      "liger-kernel": "0.8.0",
+      "causal-conv1d": "1.6.2.post1",
+      "flash-attn": "2.8.3"
+    },
+    "policy": "Optional wheels must match the exact CPython, Torch and CUDA ABI. Failures fall back to the upstream stock/SDPA path."
+  },
+  "memory": {
+    "default": "auto",
+    "autoFullGpuMinimumGiB": 36,
+    "modes": ["auto", "full_gpu", "sequential", "decoder_cpu"],
+    "policy": "Generation uses sequential main-model/decoder CUDA residency below 36 GiB; understanding tasks do not load the decoder."
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "1": {
+    "class_type": "T8_FireRedAudio_ModelLoader",
+    "inputs": {
+      "model_name": "FireRedAudio",
+      "custom_model_path": "",
+      "device": "cuda:0",
+      "memory_mode": "auto",
+      "profile": "lite",
+      "worker_mode": "managed",
+      "runtime_python": "",
+      "worker_url": "",
+      "worker_token": "",
+      "verify_hashes": false,
+      "release_after_run": false
+    }
+  },
+  "2": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "long_recording.wav"
+    }
+  },
+  "3": {
+    "class_type": "T8_FireRedAudio_LongASR",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "audio": [
+        "2",
+        0
+      ],
+      "prompt": "Transcribe speech to text.",
+      "chunk_seconds": 30.0,
+      "overlap_seconds": 1.0,
+      "max_new_tokens": 300
+    }
+  }
+}

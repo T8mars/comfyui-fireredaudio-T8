@@ -1,0 +1,18 @@
+# Development and local runtime state
+.git/
+.github/
+.runtime/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# Editor and operating-system metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Build output
+build/
+dist/
+*.egg-info/
