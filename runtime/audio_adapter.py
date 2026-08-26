@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import re
+import shutil
+import subprocess
 import tempfile
 import wave
+from datetime import datetime
 from pathlib import Path
 
 
@@ -57,6 +61,105 @@ def output_wav_path(task: str) -> Path:
     import uuid
 
     return temp_root() / f"{task}-{uuid.uuid4().hex}.wav"
+
+
+def save_audio_file(
+    audio: dict,
+    *,
+    filename_prefix: str = "fireredaudio",
+    subfolder: str = "fireredaudio",
+    audio_format: str = "wav",
+) -> Path:
+    source = audio_to_wav(audio, "save")
+    target_dir = _safe_output_dir(subfolder)
+    prefix = _safe_name(filename_prefix, "fireredaudio")
+    extension = str(audio_format).lower()
+    if extension not in {"wav", "flac", "mp3", "ogg"}:
+        raise ValueError("audio_format 必须是 wav/flac/mp3/ogg")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    target = target_dir / f"{prefix}-{stamp}.{extension}"
+    if extension == "wav":
+        shutil.copy2(source, target)
+        return target
+    ffmpeg = _ffmpeg_path()
+    codecs = {"flac": "flac", "mp3": "libmp3lame", "ogg": "libvorbis"}
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(source),
+            "-codec:a",
+            codecs[extension],
+            str(target),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
+        check=False,
+    )
+    if completed.returncode != 0 or not target.is_file():
+        target.unlink(missing_ok=True)
+        raise RuntimeError(f"FFmpeg 导出失败：{completed.stderr.strip()}")
+    return target
+
+
+def save_text_file(
+    content: str,
+    *,
+    filename_prefix: str = "fireredaudio",
+    subfolder: str = "fireredaudio",
+    text_format: str = "srt",
+) -> Path:
+    extension = str(text_format).lower()
+    if extension not in {"srt", "vtt", "txt", "jsonl"}:
+        raise ValueError("text_format 必须是 srt/vtt/txt/jsonl")
+    target_dir = _safe_output_dir(subfolder)
+    prefix = _safe_name(filename_prefix, "fireredaudio")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    target = target_dir / f"{prefix}-{stamp}.{extension}"
+    target.write_text(str(content), encoding="utf-8")
+    return target
+
+
+def _safe_output_dir(subfolder: str) -> Path:
+    try:
+        import folder_paths
+
+        root = Path(folder_paths.get_output_directory()).resolve()
+    except Exception:
+        root = (Path.cwd() / "output").resolve()
+    relative = Path(str(subfolder or "fireredaudio").replace("\\", "/"))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("输出子目录不能使用绝对路径或 ..")
+    target = (root / relative).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("输出目录越界") from exc
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _safe_name(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z._-]+", "-", str(value)).strip(".-_")
+    return cleaned[:80] or fallback
+
+
+def _ffmpeg_path() -> str:
+    bundled = Path(__file__).resolve().parents[1] / "tools" / "ffmpeg.exe"
+    if bundled.is_file():
+        return str(bundled)
+    located = shutil.which("ffmpeg")
+    if located:
+        return located
+    raise RuntimeError("未找到 FFmpeg，无法导出压缩音频格式")
 
 
 def _torch():

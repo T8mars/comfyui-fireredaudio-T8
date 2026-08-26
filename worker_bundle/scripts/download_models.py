@@ -4,6 +4,7 @@ import argparse
 import json
 import shutil
 import sys
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,64 @@ def check_disk_space(target: Path, profile: str) -> tuple[int, int]:
             f"并预留 2 GiB；当前可用 {free / 1024**3:.2f} GiB"
         )
     return remaining, free
+
+
+def download_progress_snapshot(target: Path, profile: str) -> tuple[int, int]:
+    manifest = load_manifest()
+    total = 0
+    complete = 0
+    for relative, metadata in required_file_entries(manifest, profile):
+        expected = int(metadata["size"])
+        total += expected
+        path = target / relative
+        if path.is_file():
+            complete += min(path.stat().st_size, expected)
+    partial = 0
+    for pattern in ("*.incomplete", "*.partial", "*.part"):
+        partial += sum(
+            path.stat().st_size for path in target.rglob(pattern) if path.is_file()
+        )
+    return min(total, complete + partial), total
+
+
+def run_with_progress(target: Path, profile: str, source: str, action) -> None:
+    stop = threading.Event()
+
+    def monitor() -> None:
+        previous = -1
+        while not stop.wait(1.0):
+            downloaded, total = download_progress_snapshot(target, profile)
+            if downloaded == previous or total <= 0:
+                continue
+            previous = downloaded
+            ratio = downloaded / total
+            emit_progress(
+                "download",
+                0.08 + 0.82 * ratio,
+                f"{source} 下载中：{downloaded / 1024**3:.2f} / {total / 1024**3:.2f} GiB",
+                source=source,
+                downloaded_bytes=downloaded,
+                total_bytes=total,
+                remaining_bytes=max(0, total - downloaded),
+            )
+
+    thread = threading.Thread(target=monitor, name="model-download-progress", daemon=True)
+    thread.start()
+    try:
+        action()
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+        downloaded, total = download_progress_snapshot(target, profile)
+        emit_progress(
+            "download",
+            0.9 if total and downloaded >= total else 0.08 + 0.82 * (downloaded / total if total else 0),
+            f"{source} 下载阶段结束",
+            source=source,
+            downloaded_bytes=downloaded,
+            total_bytes=total,
+            remaining_bytes=max(0, total - downloaded),
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -110,9 +169,19 @@ def main() -> int:
             try:
                 emit_progress("download", 0.1, f"正在通过 {source} 下载固定版本模型", source=source)
                 if source == "modelscope":
-                    download_modelscope(target, args.profile)
+                    run_with_progress(
+                        target,
+                        args.profile,
+                        source,
+                        lambda: download_modelscope(target, args.profile),
+                    )
                 else:
-                    download_huggingface(target, args.profile)
+                    run_with_progress(
+                        target,
+                        args.profile,
+                        source,
+                        lambda: download_huggingface(target, args.profile),
+                    )
                 break
             except Exception as exc:
                 emit_progress("source_fallback", 0.12, f"{source} 不可用，准备切换下载源", source=source)

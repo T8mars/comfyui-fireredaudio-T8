@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import audioop
+import json
 import wave
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -27,11 +29,14 @@ def split_pcm16_wav(
     *,
     chunk_seconds: float = 30.0,
     overlap_seconds: float = 1.0,
+    silence_search_seconds: float = 0.0,
 ) -> tuple[list[AudioSegment], float]:
     if not 5.0 <= chunk_seconds <= 300.0:
         raise WorkerProtocolError("chunk_seconds 必须在 5 到 300 秒之间")
     if not 0.0 <= overlap_seconds < min(chunk_seconds, 10.0):
         raise WorkerProtocolError("overlap_seconds 必须不小于 0，且小于分段长度与 10 秒")
+    if not 0.0 <= silence_search_seconds <= 5.0:
+        raise WorkerProtocolError("silence_search_seconds 必须在 0 到 5 秒之间")
 
     source_path = Path(source).resolve()
     output_root = Path(target_dir).resolve()
@@ -51,6 +56,17 @@ def split_pcm16_wav(
         index = 1
         while start < total_frames:
             end = min(total_frames, start + chunk_frames)
+            if end < total_frames and silence_search_seconds > 0:
+                end = _quiet_boundary(
+                    reader,
+                    nominal=end,
+                    minimum=start + max(1, int(5.0 * sample_rate)),
+                    total_frames=total_frames,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    sample_width=sample_width,
+                    search_frames=int(round(silence_search_seconds * sample_rate)),
+                )
             reader.setpos(start)
             payload = reader.readframes(end - start)
             target = output_root / f"segment-{index:04d}.wav"
@@ -74,6 +90,63 @@ def split_pcm16_wav(
     return segments, total_frames / sample_rate
 
 
+def _quiet_boundary(
+    reader: wave.Wave_read,
+    *,
+    nominal: int,
+    minimum: int,
+    total_frames: int,
+    sample_rate: int,
+    channels: int,
+    sample_width: int,
+    search_frames: int,
+) -> int:
+    lower = max(minimum, nominal - search_frames)
+    upper = min(total_frames, nominal + search_frames)
+    window_frames = max(1, int(round(sample_rate * 0.04)))
+    best_frame = nominal
+    best_rms: int | None = None
+    frame = lower
+    while frame < upper:
+        reader.setpos(frame)
+        payload = reader.readframes(min(window_frames, upper - frame))
+        if not payload:
+            break
+        rms = audioop.rms(payload, sample_width)
+        if best_rms is None or rms < best_rms:
+            best_rms = rms
+            best_frame = frame + max(1, len(payload) // (channels * sample_width * 2))
+        frame += window_frames
+    return max(minimum, min(total_frames, best_frame))
+
+
+def deduplicate_segment_texts(
+    segments: list[dict[str, object]], max_overlap_chars: int = 120
+) -> tuple[str, list[dict[str, object]]]:
+    """Remove exact suffix/prefix duplication introduced by overlapping windows."""
+    cleaned: list[dict[str, object]] = []
+    history = ""
+    parts: list[str] = []
+    for raw in segments:
+        segment = dict(raw)
+        text = str(segment.get("text") or "").strip()
+        overlap = 0
+        if history and text:
+            limit = min(max_overlap_chars, len(history), len(text))
+            for size in range(limit, 1, -1):
+                if history[-size:] == text[:size]:
+                    overlap = size
+                    break
+        segment["deduplicated_prefix_chars"] = overlap
+        segment["text"] = text[overlap:].lstrip()
+        cleaned_text = str(segment["text"])
+        history += cleaned_text
+        if cleaned_text:
+            parts.append(cleaned_text)
+        cleaned.append(segment)
+    return "\n".join(parts), cleaned
+
+
 def render_srt(segments: list[dict[str, object]]) -> str:
     blocks = []
     for index, segment in enumerate(segments, 1):
@@ -84,9 +157,27 @@ def render_srt(segments: list[dict[str, object]]) -> str:
     return "\n\n".join(blocks) + ("\n" if blocks else "")
 
 
+def render_vtt(segments: list[dict[str, object]]) -> str:
+    blocks = ["WEBVTT"]
+    for segment in segments:
+        blocks.append(
+            f"{_vtt_time(float(segment['start_seconds']))} --> "
+            f"{_vtt_time(float(segment['end_seconds']))}\n{segment['text']}"
+        )
+    return "\n\n".join(blocks) + "\n"
+
+
+def render_jsonl(segments: list[dict[str, object]]) -> str:
+    return "".join(json.dumps(segment, ensure_ascii=False) + "\n" for segment in segments)
+
+
 def _srt_time(seconds: float) -> str:
     milliseconds = max(0, int(round(seconds * 1000)))
     hours, remainder = divmod(milliseconds, 3_600_000)
     minutes, remainder = divmod(remainder, 60_000)
     secs, millis = divmod(remainder, 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def _vtt_time(seconds: float) -> str:
+    return _srt_time(seconds).replace(",", ".")

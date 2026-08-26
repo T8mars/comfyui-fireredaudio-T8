@@ -16,6 +16,8 @@ from .constants import DEFAULT_HOST, PROTOCOL_VERSION
 from .errors import FireRedAudioT8Error, TaskCancelledError
 from .model_manager import validate_model_dir
 from .runtime import FireRedAudioRuntime
+from .audio_quality import analyze_audio
+from .system_info import runtime_readiness
 
 logger = logging.getLogger("fireredaudio_t8.worker")
 
@@ -60,7 +62,7 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
             elif route == "/v1/model/load":
                 result = self.server.runtime.load(
                     payload["model_root"],
-                    device=str(payload.get("device") or "cuda:0"),
+                    device=str(payload.get("device") or "auto"),
                     profile=str(payload.get("profile") or "full"),
                     memory_mode=str(payload.get("memory_mode") or "auto"),
                 )
@@ -72,6 +74,18 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                     profile=str(payload.get("profile") or "full"),
                     verify_hashes=bool(payload.get("verify_hashes", False)),
                 ).to_dict()
+            elif route == "/v1/system/info":
+                result = runtime_readiness()
+            elif route == "/v1/audio/analyze":
+                result = analyze_audio(payload["audio_path"])
+            elif route == "/v1/cache/status":
+                result = self.server.runtime.cache_status()
+            elif route == "/v1/cache/cleanup":
+                result = self.server.runtime.cleanup_cache(
+                    max_age_hours=float(payload.get("max_age_hours", 72.0)),
+                    max_size_mib=float(payload.get("max_size_mib", 2048.0)),
+                    clear_all=bool(payload.get("clear_all", False)),
+                )
             elif route == "/v1/task/cancel":
                 result = self.server.runtime.cancel(payload.get("task_id"))
             elif route == "/shutdown":

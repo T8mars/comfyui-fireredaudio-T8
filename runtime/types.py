@@ -7,7 +7,7 @@ from typing import Any
 @dataclass(frozen=True)
 class RuntimeHandle:
     model_root: str
-    device: str = "cuda:0"
+    device: str = "auto"
     memory_mode: str = "auto"
     runtime_python: str = ""
     worker_url: str = ""

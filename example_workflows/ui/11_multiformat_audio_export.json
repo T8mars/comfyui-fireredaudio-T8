@@ -1,6 +1,6 @@
 {
-  "last_node_id": 3,
-  "last_link_id": 2,
+  "last_node_id": 4,
+  "last_link_id": 3,
   "nodes": [
     {
       "id": 1,
@@ -52,14 +52,14 @@
     },
     {
       "id": 2,
-      "type": "LoadAudio",
+      "type": "T8_FireRedAudio_GenerationSettings",
       "pos": [
-        60,
-        450
+        470,
+        80
       ],
       "size": [
-        300,
-        170
+        320,
+        280
       ],
       "flags": {},
       "order": 1,
@@ -67,8 +67,8 @@
       "inputs": [],
       "outputs": [
         {
-          "name": "AUDIO",
-          "type": "AUDIO",
+          "name": "settings",
+          "type": "T8_FIREREDAUDIO_SETTINGS",
           "links": [
             2
           ],
@@ -76,24 +76,28 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "LoadAudio"
+        "Node name for S&R": "T8_FireRedAudio_GenerationSettings"
       },
       "widgets_values": [
-        "voice_reference.wav",
-        null,
-        null
+        "balanced",
+        42,
+        750,
+        6,
+        512,
+        10,
+        2.0
       ]
     },
     {
       "id": 3,
-      "type": "T8_FireRedAudio_LongASR",
+      "type": "T8_FireRedAudio_VoiceDesign",
       "pos": [
-        500,
-        220
+        850,
+        180
       ],
       "size": [
-        390,
-        340
+        410,
+        250
       ],
       "flags": {},
       "order": 2,
@@ -105,28 +109,18 @@
           "link": 1
         },
         {
-          "name": "audio",
-          "type": "AUDIO",
+          "name": "settings",
+          "type": "T8_FIREREDAUDIO_SETTINGS",
           "link": 2
         }
       ],
       "outputs": [
         {
-          "name": "transcript",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
-        },
-        {
-          "name": "srt",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
-        },
-        {
-          "name": "segments_json",
-          "type": "STRING",
-          "links": [],
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            3
+          ],
           "slot_index": 0
         },
         {
@@ -134,29 +128,52 @@
           "type": "STRING",
           "links": [],
           "slot_index": 0
-        },
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_VoiceDesign"
+      },
+      "widgets_values": [
+        "A warm, calm narrator with clear articulation.",
+        "This example exports an MP3 file."
+      ]
+    },
+    {
+      "id": 4,
+      "type": "T8_FireRedAudio_SaveAudio",
+      "pos": [
+        1310,
+        210
+      ],
+      "size": [
+        360,
+        210
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
         {
-          "name": "vtt",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
-        },
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 3
+        }
+      ],
+      "outputs": [
         {
-          "name": "jsonl",
+          "name": "saved_path",
           "type": "STRING",
           "links": [],
           "slot_index": 0
         }
       ],
       "properties": {
-        "Node name for S&R": "T8_FireRedAudio_LongASR"
+        "Node name for S&R": "T8_FireRedAudio_SaveAudio"
       },
       "widgets_values": [
-        "Transcribe speech to text.",
-        30.0,
-        1.0,
-        300,
-        1.5
+        "mp3",
+        "voice_design",
+        "fireredaudio/exports"
       ]
     }
   ],
@@ -175,6 +192,14 @@
       0,
       3,
       1,
+      "T8_FIREREDAUDIO_SETTINGS"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      0,
       "AUDIO"
     ]
   ],

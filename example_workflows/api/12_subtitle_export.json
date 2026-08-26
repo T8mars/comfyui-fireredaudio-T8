@@ -38,5 +38,17 @@
       "max_new_tokens": 300,
       "silence_search_seconds": 1.5
     }
+  },
+  "4": {
+    "class_type": "T8_FireRedAudio_SaveSubtitle",
+    "inputs": {
+      "content": [
+        "3",
+        4
+      ],
+      "text_format": "vtt",
+      "filename_prefix": "long_audio",
+      "subfolder": "fireredaudio/subtitles"
+    }
   }
 }

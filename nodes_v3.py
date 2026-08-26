@@ -12,7 +12,14 @@ from typing import Any
 
 from comfy_api.latest import ComfyExtension, io
 
-from .runtime.audio_adapter import audio_to_wav, output_wav_path, wav_to_audio
+from .runtime.audio_adapter import (
+    audio_to_wav,
+    output_wav_path,
+    save_audio_file,
+    save_text_file,
+    wav_to_audio,
+)
+from .runtime.acoustic import acoustic_instruction
 from .runtime.model_discovery import (
     MISSING_MODEL_OPTION,
     fingerprint,
@@ -30,9 +37,50 @@ CATEGORY = "T8star-Aix/Audio/FireRedAudio"
 ModelType = io.Custom("T8_FIREREDAUDIO_MODEL")
 SettingsType = io.Custom("T8_FIREREDAUDIO_SETTINGS")
 
+LONG_LOCATE_PROMPTS = {
+    "timeline_summary": (
+        "Analyze the full recording and return a chronological timeline as JSON. "
+        "Each item must contain start_time, end_time, topic, and summary. "
+        "Use HH:MM:SS timestamps and preserve important transitions."
+    ),
+    "time_to_content": (
+        "Locate what happens at the requested time or interval in the recording. "
+        "Return JSON with query, start_time, end_time, transcript_or_event, and evidence."
+    ),
+    "content_to_time": (
+        "Find every time interval in the recording that matches the requested content. "
+        "Return a JSON array with start_time, end_time, match, and confidence_reason."
+    ),
+    "structured_summary": (
+        "Summarize the complete recording as JSON with title, duration_context, speakers, "
+        "topics, key_events, decisions, and action_items. Add timestamps where possible."
+    ),
+}
+
 
 def _json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _set_official_progress(value: float) -> bool:
+    try:
+        from comfy_api.latest import ComfyAPISync
+
+        ComfyAPISync().execution.set_progress(
+            max(0.0, min(1.0, float(value))), 1.0
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _autogrow_values(values: dict) -> list[Any]:
+    def order(item: tuple[str, Any]) -> tuple[int, str]:
+        key = item[0]
+        suffix = key.rsplit("_", 1)[-1]
+        return (int(suffix) if suffix.isdigit() else 10_000, key)
+
+    return [value for _key, value in sorted(values.items(), key=order) if value is not None]
 
 
 def _client(handle: RuntimeHandle):
@@ -71,7 +119,8 @@ def _infer(handle: RuntimeHandle, request: dict[str, Any]) -> dict[str, Any]:
         try:
             health = client.health()
             status = health.get("status", {})
-            if progress_bar is not None:
+            official = _set_official_progress(float(status.get("progress", 0.0)))
+            if progress_bar is not None and not official:
                 progress_bar.update_absolute(
                     int(max(0.0, min(1.0, float(status.get("progress", 0.0)))) * 100),
                     100,
@@ -94,6 +143,7 @@ def _infer(handle: RuntimeHandle, request: dict[str, Any]) -> dict[str, Any]:
         raise error_box[0]
     if progress_bar is not None:
         progress_bar.update_absolute(100, 100)
+    _set_official_progress(1.0)
     return result_box
 
 
@@ -125,7 +175,7 @@ class T8FireRedAudioModelLoader(io.ComfyNode):
             inputs=[
                 io.Combo.Input("model_name", display_name="模型", options=options, default=options[0]),
                 io.String.Input("custom_model_path", display_name="自定义模型根目录", default="", optional=True),
-                io.Combo.Input("device", display_name="推理设备", options=["cuda:0", "cuda:1", "cpu"], default="cuda:0"),
+                io.Combo.Input("device", display_name="推理设备", options=["auto", "cuda:0", "cuda:1", "cuda:2", "cuda:3", "cpu"], default="auto", tooltip="auto 由隔离 Worker 选择第一张可用 NVIDIA GPU；运行时状态会显示真实显存。"),
                 io.Combo.Input("memory_mode", display_name="显存模式", options=["auto", "full_gpu", "sequential", "decoder_cpu"], default="auto", tooltip="auto 在低于 36GB 显存时让主模型与解码器顺序上卡。"),
                 io.Combo.Input("profile", display_name="校验配置", options=["full", "lite"], default="full"),
                 io.Combo.Input("worker_mode", display_name="Worker 模式", options=["managed", "external"], default="managed"),
@@ -278,7 +328,7 @@ class T8FireRedAudioLongASR(io.ComfyNode):
             display_name="FireRedAudio 长音频分段转写 · T8star-Aix",
             category=CATEGORY,
             essentials_category="Audio",
-            description="固定窗口分段转写长录音，输出全文、SRT 和带时间戳的 JSON。",
+            description="静音附近智能切段、重叠文本去重，输出分段级近似时间的 SRT/VTT/JSONL。",
             inputs=[
                 ModelType.Input("model"),
                 io.Audio.Input("audio", display_name="长音频"),
@@ -286,17 +336,20 @@ class T8FireRedAudioLongASR(io.ComfyNode):
                 io.Float.Input("chunk_seconds", display_name="每段秒数", default=30.0, min=5.0, max=300.0, step=1.0),
                 io.Float.Input("overlap_seconds", display_name="重叠秒数", default=1.0, min=0.0, max=9.0, step=0.5),
                 io.Int.Input("max_new_tokens", display_name="每段最大新 Token", default=300, min=1, max=4096),
+                io.Float.Input("silence_search_seconds", display_name="静音切点搜索范围", default=1.5, min=0.0, max=5.0, step=0.25, advanced=True),
             ],
             outputs=[
                 io.String.Output("transcript", display_name="完整转写"),
                 io.String.Output("srt", display_name="SRT 字幕"),
                 io.String.Output("segments_json", display_name="时间戳 JSON"),
                 io.String.Output("report", display_name="运行报告"),
+                io.String.Output("vtt", display_name="WebVTT 字幕"),
+                io.String.Output("jsonl", display_name="JSONL 分段"),
             ],
         )
 
     @classmethod
-    def execute(cls, model: RuntimeHandle, audio: dict, prompt: str, chunk_seconds: float, overlap_seconds: float, max_new_tokens: int) -> io.NodeOutput:
+    def execute(cls, model: RuntimeHandle, audio: dict, prompt: str, chunk_seconds: float, overlap_seconds: float, max_new_tokens: int, silence_search_seconds: float = 1.5) -> io.NodeOutput:
         request = _base_request(model, "long_asr")
         request.update({
             "audio_path": str(audio_to_wav(audio, "long-asr")),
@@ -304,12 +357,61 @@ class T8FireRedAudioLongASR(io.ComfyNode):
             "chunk_seconds": chunk_seconds,
             "overlap_seconds": overlap_seconds,
             "max_new_tokens": max_new_tokens,
+            "silence_search_seconds": silence_search_seconds,
         })
         result = _infer(model, request)
         return io.NodeOutput(
             result.get("answer", ""),
             result.get("srt", ""),
             _json(result.get("segments", [])),
+            _json(result),
+            result.get("vtt", ""),
+            result.get("jsonl", ""),
+        )
+
+
+class T8FireRedAudioLongLocator(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_LongLocator",
+            display_name="FireRedAudio 长音频时间定位 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="调用 FireRedAudio 原生长录音理解能力，完成时间线、时间找内容、内容找时间和结构化摘要。",
+            inputs=[
+                ModelType.Input("model"),
+                io.Audio.Input("audio", display_name="长音频"),
+                io.Combo.Input("mode", display_name="定位模式", options=list(LONG_LOCATE_PROMPTS), default="timeline_summary"),
+                io.String.Input("query", display_name="时间、内容或补充要求", default="", multiline=True, dynamic_prompts=True),
+                io.Boolean.Input("enable_thinking", display_name="输出思考过程", default=True),
+                io.Int.Input("max_new_tokens", display_name="最大新 Token", default=2048, min=128, max=10240),
+            ],
+            outputs=[
+                io.String.Output("answer", display_name="定位结果"),
+                io.String.Output("structured_json", display_name="结构化 JSON"),
+                io.String.Output("reasoning", display_name="思考过程"),
+                io.String.Output("report", display_name="运行报告"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, model: RuntimeHandle, audio: dict, mode: str, query: str, enable_thinking: bool, max_new_tokens: int) -> io.NodeOutput:
+        base = LONG_LOCATE_PROMPTS.get(mode, LONG_LOCATE_PROMPTS["timeline_summary"])
+        prompt = base + (f"\nUser query: {query.strip()}" if query.strip() else "")
+        request = _base_request(model, "long_locate")
+        request.update({
+            "audio_path": str(audio_to_wav(audio, "long-locator")),
+            "mode": mode,
+            "prompt": prompt,
+            "enable_thinking": enable_thinking,
+            "max_new_tokens": max_new_tokens,
+        })
+        result = _infer(model, request)
+        return io.NodeOutput(
+            result.get("answer", ""),
+            _json(result.get("structured")),
+            result.get("reasoning") or "",
             _json(result),
         )
 
@@ -339,6 +441,47 @@ class T8FireRedAudioUnderstand(io.ComfyNode):
         paths = [str(audio_to_wav(audio, "understand-1"))]
         if audio_2 is not None:
             paths.append(str(audio_to_wav(audio_2, "understand-2")))
+        request = _base_request(model, "understand")
+        request.update({"audio_paths": paths, "prompt": prompt, "enable_thinking": enable_thinking, "max_new_tokens": max_new_tokens})
+        result = _infer(model, request)
+        return io.NodeOutput(result.get("answer", ""), result.get("reasoning") or "", _json(result))
+
+
+class T8FireRedAudioMultiUnderstand(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_MultiUnderstand",
+            display_name="FireRedAudio 多音频比较理解 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="自动增长 1–8 个音频输入，用于说话人比较、事件对照和多音频问答。",
+            inputs=[
+                ModelType.Input("model"),
+                io.Autogrow.Input(
+                    "audios",
+                    display_name="音频",
+                    template=io.Autogrow.TemplatePrefix(
+                        io.Audio.Input("audio"), prefix="audio_", min=1, max=8
+                    ),
+                ),
+                io.String.Input("prompt", display_name="问题", multiline=True, default="Compare these recordings and explain the relevant similarities and differences.", dynamic_prompts=True),
+                io.Boolean.Input("enable_thinking", display_name="输出思考过程", default=False),
+                io.Int.Input("max_new_tokens", display_name="最大新 Token", default=1024, min=1, max=10240),
+            ],
+            outputs=[
+                io.String.Output("answer", display_name="回答"),
+                io.String.Output("reasoning", display_name="思考过程"),
+                io.String.Output("report", display_name="运行报告"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, model: RuntimeHandle, audios: dict, prompt: str, enable_thinking: bool, max_new_tokens: int) -> io.NodeOutput:
+        values = _autogrow_values(audios)
+        if not values:
+            raise ValueError("至少连接一个音频")
+        paths = [str(audio_to_wav(value, f"multi-understand-{index}")) for index, value in enumerate(values, 1)]
         request = _base_request(model, "understand")
         request.update({"audio_paths": paths, "prompt": prompt, "enable_thinking": enable_thinking, "max_new_tokens": max_new_tokens})
         result = _infer(model, request)
@@ -436,6 +579,115 @@ class T8FireRedAudioSpeechEdit(io.ComfyNode):
         return io.NodeOutput(wav_to_audio(result["output_path"]), result.get("text", ""), _json(result))
 
 
+class T8FireRedAudioAcousticEdit(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_AcousticEdit",
+            display_name="FireRedAudio 参数化声学编辑 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="用安全控件生成上游严格模板，避免手写音高、速度和音量英文指令。",
+            inputs=[
+                ModelType.Input("model"),
+                io.Audio.Input("audio", display_name="待编辑音频"),
+                io.Combo.Input("operation", display_name="操作", options=["pitch", "speed", "volume"], default="pitch"),
+                io.Int.Input("pitch_steps", display_name="音高步数（不能为 0）", default=3, min=-6, max=6),
+                io.Float.Input("speed", display_name="速度", default=1.2, min=0.5, max=2.0, step=0.1),
+                io.Float.Input("volume", display_name="音量", default=1.0, min=0.3, max=2.0, step=0.1),
+                SettingsType.Input("settings", display_name="生成参数", optional=True),
+            ],
+            outputs=[
+                io.Audio.Output("audio", display_name="编辑后音频"),
+                io.String.Output("instruction", display_name="实际指令"),
+                io.String.Output("report", display_name="运行报告"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, model: RuntimeHandle, audio: dict, operation: str, pitch_steps: int, speed: float, volume: float, settings: GenerationSettings | None = None) -> io.NodeOutput:
+        instruction = acoustic_instruction(
+            operation, pitch_steps=pitch_steps, speed=speed, volume=volume
+        )
+        output = output_wav_path("acoustic-edit")
+        request = _base_request(model, "edit", _settings(settings))
+        request.update({
+            "audio_path": str(audio_to_wav(audio, "acoustic-edit-input")),
+            "instruction": instruction,
+            "edit_type": "acoustic",
+            "output_path": str(output),
+        })
+        result = _infer(model, request)
+        return io.NodeOutput(wav_to_audio(result["output_path"]), instruction, _json(result))
+
+
+class T8FireRedAudioReferenceQuality(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_ReferenceQuality",
+            display_name="FireRedAudio 参考音频质检 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="检查参考音频时长、采样率、声道、削波、静音比例、响度和直流偏移。",
+            inputs=[ModelType.Input("model"), io.Audio.Input("audio", display_name="参考音频")],
+            outputs=[io.Audio.Output("audio", display_name="原始音频"), io.String.Output("quality_report", display_name="质检报告 JSON")],
+        )
+
+    @classmethod
+    def execute(cls, model: RuntimeHandle, audio: dict) -> io.NodeOutput:
+        path = audio_to_wav(audio, "reference-quality")
+        result = _client(model).analyze_audio(str(path))
+        return io.NodeOutput(audio, _json(result))
+
+
+class T8FireRedAudioSaveAudio(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_SaveAudio",
+            display_name="FireRedAudio 保存音频 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="安全保存 WAV/FLAC/MP3/OGG 到 ComfyUI output 目录。",
+            inputs=[
+                io.Audio.Input("audio"),
+                io.Combo.Input("audio_format", display_name="格式", options=["wav", "flac", "mp3", "ogg"], default="wav"),
+                io.String.Input("filename_prefix", display_name="文件名前缀", default="fireredaudio"),
+                io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio"),
+            ],
+            outputs=[io.String.Output("saved_path", display_name="保存路径")],
+        )
+
+    @classmethod
+    def execute(cls, audio: dict, audio_format: str, filename_prefix: str, subfolder: str) -> io.NodeOutput:
+        target = save_audio_file(audio, filename_prefix=filename_prefix, subfolder=subfolder, audio_format=audio_format)
+        return io.NodeOutput(str(target))
+
+
+class T8FireRedAudioSaveSubtitle(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_SaveSubtitle",
+            display_name="FireRedAudio 保存字幕/文本 · T8star-Aix",
+            category=CATEGORY,
+            description="安全保存 SRT/VTT/TXT/JSONL 到 ComfyUI output 目录。",
+            inputs=[
+                io.String.Input("content", display_name="字幕或文本", multiline=True, force_input=True),
+                io.Combo.Input("text_format", display_name="格式", options=["srt", "vtt", "txt", "jsonl"], default="srt"),
+                io.String.Input("filename_prefix", display_name="文件名前缀", default="fireredaudio"),
+                io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio"),
+            ],
+            outputs=[io.String.Output("saved_path", display_name="保存路径")],
+        )
+
+    @classmethod
+    def execute(cls, content: str, text_format: str, filename_prefix: str, subfolder: str) -> io.NodeOutput:
+        target = save_text_file(content, filename_prefix=filename_prefix, subfolder=subfolder, text_format=text_format)
+        return io.NodeOutput(str(target))
+
+
 class T8FireRedAudioRuntimeControl(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -446,7 +698,7 @@ class T8FireRedAudioRuntimeControl(io.ComfyNode):
             description="查看隔离 Worker 状态、取消当前任务、释放模型显存或停止托管 Worker。",
             inputs=[
                 ModelType.Input("model"),
-                io.Combo.Input("action", display_name="操作", options=["status", "cancel_current", "unload_model", "stop_worker"], default="status"),
+                io.Combo.Input("action", display_name="操作", options=["status", "cache_status", "clear_audio_cache", "cancel_current", "unload_model", "stop_worker"], default="status"),
             ],
             outputs=[io.String.Output("status", display_name="运行时状态")],
         )
@@ -455,6 +707,10 @@ class T8FireRedAudioRuntimeControl(io.ComfyNode):
     def execute(cls, model: RuntimeHandle, action: str) -> io.NodeOutput:
         if action == "unload_model":
             result = WORKER_MANAGER.unload(model)
+        elif action == "cache_status":
+            result = _client(model).cache_status()
+        elif action == "clear_audio_cache":
+            result = _client(model).cleanup_cache(clear_all=True)
         elif action == "cancel_current":
             result = _client(model).cancel()
         elif action == "stop_worker":
@@ -508,10 +764,16 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioGenerationSettings,
             T8FireRedAudioASR,
             T8FireRedAudioLongASR,
+            T8FireRedAudioLongLocator,
             T8FireRedAudioUnderstand,
+            T8FireRedAudioMultiUnderstand,
             T8FireRedAudioTTS,
             T8FireRedAudioVoiceDesign,
             T8FireRedAudioSpeechEdit,
+            T8FireRedAudioAcousticEdit,
+            T8FireRedAudioReferenceQuality,
+            T8FireRedAudioSaveAudio,
+            T8FireRedAudioSaveSubtitle,
             T8FireRedAudioRuntimeControl,
             T8FireRedAudioEnvironment,
         ]

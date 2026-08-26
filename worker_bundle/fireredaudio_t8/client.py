@@ -62,3 +62,19 @@ class WorkerClient:
 
     def cancel(self, task_id: str | None = None) -> dict[str, Any]:
         return self.request("v1/task/cancel", {"task_id": task_id})
+
+    def system_info(self) -> dict[str, Any]:
+        return self.request("v1/system/info", {})
+
+    def analyze_audio(self, audio_path: str) -> dict[str, Any]:
+        return self.request("v1/audio/analyze", {"audio_path": audio_path}, timeout=120.0)
+
+    def cache_status(self) -> dict[str, Any]:
+        return self.request("v1/cache/status", {})
+
+    def cleanup_cache(self, clear_all: bool = False) -> dict[str, Any]:
+        return self.request(
+            "v1/cache/cleanup",
+            {"clear_all": clear_all, "max_age_hours": 72.0, "max_size_mib": 2048.0},
+            timeout=120.0,
+        )

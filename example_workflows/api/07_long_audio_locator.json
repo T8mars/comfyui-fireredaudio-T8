@@ -22,7 +22,7 @@
     }
   },
   "3": {
-    "class_type": "T8_FireRedAudio_LongASR",
+    "class_type": "T8_FireRedAudio_LongLocator",
     "inputs": {
       "model": [
         "1",
@@ -32,11 +32,10 @@
         "2",
         0
       ],
-      "prompt": "Transcribe speech to text.",
-      "chunk_seconds": 30.0,
-      "overlap_seconds": 1.0,
-      "max_new_tokens": 300,
-      "silence_search_seconds": 1.5
+      "mode": "timeline_summary",
+      "query": "",
+      "enable_thinking": true,
+      "max_new_tokens": 2048
     }
   }
 }

@@ -1,6 +1,6 @@
 {
-  "last_node_id": 3,
-  "last_link_id": 2,
+  "last_node_id": 4,
+  "last_link_id": 3,
   "nodes": [
     {
       "id": 1,
@@ -86,17 +86,55 @@
     },
     {
       "id": 3,
-      "type": "T8_FireRedAudio_LongASR",
+      "type": "T8_FireRedAudio_GenerationSettings",
       "pos": [
-        500,
-        220
+        470,
+        80
       ],
       "size": [
-        390,
-        340
+        320,
+        280
       ],
       "flags": {},
       "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "settings",
+          "type": "T8_FIREREDAUDIO_SETTINGS",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_GenerationSettings"
+      },
+      "widgets_values": [
+        "balanced",
+        42,
+        750,
+        6,
+        512,
+        10,
+        2.0
+      ]
+    },
+    {
+      "id": 4,
+      "type": "T8_FireRedAudio_AcousticEdit",
+      "pos": [
+        850,
+        220
+      ],
+      "size": [
+        410,
+        300
+      ],
+      "flags": {},
+      "order": 3,
       "mode": 0,
       "inputs": [
         {
@@ -108,23 +146,22 @@
           "name": "audio",
           "type": "AUDIO",
           "link": 2
+        },
+        {
+          "name": "settings",
+          "type": "T8_FIREREDAUDIO_SETTINGS",
+          "link": 3
         }
       ],
       "outputs": [
         {
-          "name": "transcript",
-          "type": "STRING",
+          "name": "audio",
+          "type": "AUDIO",
           "links": [],
           "slot_index": 0
         },
         {
-          "name": "srt",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
-        },
-        {
-          "name": "segments_json",
+          "name": "instruction",
           "type": "STRING",
           "links": [],
           "slot_index": 0
@@ -134,29 +171,16 @@
           "type": "STRING",
           "links": [],
           "slot_index": 0
-        },
-        {
-          "name": "vtt",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
-        },
-        {
-          "name": "jsonl",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
         }
       ],
       "properties": {
-        "Node name for S&R": "T8_FireRedAudio_LongASR"
+        "Node name for S&R": "T8_FireRedAudio_AcousticEdit"
       },
       "widgets_values": [
-        "Transcribe speech to text.",
-        30.0,
-        1.0,
-        300,
-        1.5
+        "speed",
+        3,
+        1.2,
+        1.0
       ]
     }
   ],
@@ -165,7 +189,7 @@
       1,
       1,
       0,
-      3,
+      4,
       0,
       "T8_FIREREDAUDIO_MODEL"
     ],
@@ -173,9 +197,17 @@
       2,
       2,
       0,
-      3,
+      4,
       1,
       "AUDIO"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      2,
+      "T8_FIREREDAUDIO_SETTINGS"
     ]
   ],
   "groups": [],

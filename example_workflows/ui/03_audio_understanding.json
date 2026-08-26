@@ -39,7 +39,7 @@
       "widgets_values": [
         "FireRedAudio",
         "",
-        "cuda:0",
+        "auto",
         "auto",
         "full",
         "managed",

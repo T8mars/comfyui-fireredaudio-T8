@@ -18,25 +18,33 @@
   "2": {
     "class_type": "LoadAudio",
     "inputs": {
-      "audio": "long_recording.wav"
+      "audio": "voice_reference.wav"
     }
   },
   "3": {
-    "class_type": "T8_FireRedAudio_LongASR",
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "comparison.wav"
+    }
+  },
+  "4": {
+    "class_type": "T8_FireRedAudio_MultiUnderstand",
     "inputs": {
       "model": [
         "1",
         0
       ],
-      "audio": [
+      "audio_0": [
         "2",
         0
       ],
-      "prompt": "Transcribe speech to text.",
-      "chunk_seconds": 30.0,
-      "overlap_seconds": 1.0,
-      "max_new_tokens": 300,
-      "silence_search_seconds": 1.5
+      "audio_1": [
+        "3",
+        0
+      ],
+      "prompt": "Compare these recordings and explain the relevant similarities and differences.",
+      "enable_thinking": true,
+      "max_new_tokens": 1536
     }
   }
 }

@@ -39,7 +39,7 @@
       "widgets_values": [
         "FireRedAudio",
         "",
-        "cuda:0",
+        "auto",
         "auto",
         "full",
         "managed",
@@ -51,7 +51,7 @@
       ]
     },
     {
-      "id": 3,
+      "id": 2,
       "type": "T8_FireRedAudio_GenerationSettings",
       "pos": [
         470,
@@ -62,7 +62,7 @@
         280
       ],
       "flags": {},
-      "order": 2,
+      "order": 1,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -70,7 +70,7 @@
           "name": "settings",
           "type": "T8_FIREREDAUDIO_SETTINGS",
           "links": [
-            3
+            2
           ],
           "slot_index": 0
         }
@@ -186,7 +186,7 @@
     ],
     [
       2,
-      3,
+      2,
       0,
       3,
       1,

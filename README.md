@@ -7,14 +7,17 @@ FireRedAudio 的 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点
 ## 能力
 
 - 多语言 ASR
-- 长音频固定窗口分段转写，输出时间戳 JSON 与 SRT
-- 单/双音频理解与问答，可选 thinking
+- 长音频静音感知分段、重叠去重，输出 SRT、VTT、JSON 与 JSONL
+- 原生长录音时间线、时间找内容、内容找时间和结构化摘要
+- 单音频理解，以及 1–8 个动态音频比较问答，可选 thinking
 - 中英文零样本声音克隆
 - 自然语言声音设计
 - 语义语音编辑
-- 音高、速度、音量声学编辑
-- 模型校验、隔离环境诊断、显存释放和 Worker 停止
-- 任务进度同步、ComfyUI 中断联动取消、快速/均衡/高质量预设
+- 严格模板和参数化两种音高、速度、音量声学编辑
+- 参考音频时长、响度、削波、静音、直流偏移质检
+- WAV、FLAC、MP3、OGG 音频与 SRT、VTT、TXT、JSONL 安全保存
+- 模型校验、真实 GPU/空闲显存报告、缓存清理、显存释放和 Worker 停止
+- ComfyUI V3 进度同步、中断联动取消、快速/均衡/高质量预设
 
 ## 安装
 
@@ -48,6 +51,8 @@ python scripts/setup_runtime.py
 
 也可在模型加载器中填写其他隔离 `python.exe`，或连接桌面整合包启动的外部 Worker。节点绝不调用 `pip` 修改 ComfyUI 环境。
 
+模型加载器的设备默认使用 `auto`。实际 GPU、空闲显存和最终选用的显存模式可通过“运行时控制”节点查看；`auto` 会在空闲显存不足 36 GiB 时选择顺序卸载，而不是只看显卡标称总显存。
+
 ## 模型
 
 默认扫描：
@@ -73,9 +78,11 @@ python scripts/download_models.py --target "D:\ComfyUI\models\TTS\FireRedAudio" 
 1. `Load Audio` → `FireRedAudio 零样本声音克隆` 的参考音频输入。
 2. `FireRedAudio 模型/隔离运行时` → TTS 的模型输入。
 3. 可选连接 `FireRedAudio 生成参数`。
-4. TTS 输出连接 ComfyUI 原生 `Save Audio`。
+4. TTS 输出连接 `FireRedAudio 保存音频`，可选择 WAV/FLAC/MP3/OGG。
 
 示例见 `example_workflows/ui` 和 `example_workflows/api`。
+
+长音频字幕是静音感知的分段级近似时间，不是词级强制对齐。上游生成目前仅支持单样本，批量工作流应顺序执行，不能视为原生 GPU batch。
 
 ## 许可证与安全
 

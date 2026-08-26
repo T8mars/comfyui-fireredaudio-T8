@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-RUNTIME_VERSION = "0.2.0"
+RUNTIME_VERSION = "0.3.0"
 CODE_REVISION = "88b826378023eb9a49b297214568398a300e5c32"
 MODEL_REVISION = "3abf43d7539a2fc05991b9f89295c892f0a034f0"
 MODEL_REPOSITORY = "FireRedTeam/FireRedAudio"
@@ -9,5 +9,5 @@ DEFAULT_SAMPLE_RATE = 24_000
 PROTOCOL_VERSION = 1
 
 GENERATION_TASKS = frozenset({"tts", "edit", "voice_design"})
-UNDERSTANDING_TASKS = frozenset({"asr", "understand", "long_asr"})
+UNDERSTANDING_TASKS = frozenset({"asr", "understand", "long_asr", "long_locate"})
 ALL_TASKS = GENERATION_TASKS | UNDERSTANDING_TASKS

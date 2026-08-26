@@ -86,14 +86,14 @@
     },
     {
       "id": 3,
-      "type": "T8_FireRedAudio_LongASR",
+      "type": "T8_FireRedAudio_LongLocator",
       "pos": [
         500,
-        220
+        210
       ],
       "size": [
-        390,
-        340
+        410,
+        300
       ],
       "flags": {},
       "order": 2,
@@ -112,19 +112,19 @@
       ],
       "outputs": [
         {
-          "name": "transcript",
+          "name": "answer",
           "type": "STRING",
           "links": [],
           "slot_index": 0
         },
         {
-          "name": "srt",
+          "name": "structured_json",
           "type": "STRING",
           "links": [],
           "slot_index": 0
         },
         {
-          "name": "segments_json",
+          "name": "reasoning",
           "type": "STRING",
           "links": [],
           "slot_index": 0
@@ -134,29 +134,16 @@
           "type": "STRING",
           "links": [],
           "slot_index": 0
-        },
-        {
-          "name": "vtt",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
-        },
-        {
-          "name": "jsonl",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
         }
       ],
       "properties": {
-        "Node name for S&R": "T8_FireRedAudio_LongASR"
+        "Node name for S&R": "T8_FireRedAudio_LongLocator"
       },
       "widgets_values": [
-        "Transcribe speech to text.",
-        30.0,
-        1.0,
-        300,
-        1.5
+        "timeline_summary",
+        "",
+        true,
+        2048
       ]
     }
   ],

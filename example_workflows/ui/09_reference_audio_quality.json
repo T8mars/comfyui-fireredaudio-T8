@@ -86,14 +86,14 @@
     },
     {
       "id": 3,
-      "type": "T8_FireRedAudio_LongASR",
+      "type": "T8_FireRedAudio_ReferenceQuality",
       "pos": [
         500,
         220
       ],
       "size": [
         390,
-        340
+        180
       ],
       "flags": {},
       "order": 2,
@@ -112,52 +112,22 @@
       ],
       "outputs": [
         {
-          "name": "transcript",
-          "type": "STRING",
+          "name": "audio",
+          "type": "AUDIO",
           "links": [],
           "slot_index": 0
         },
         {
-          "name": "srt",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
-        },
-        {
-          "name": "segments_json",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
-        },
-        {
-          "name": "report",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
-        },
-        {
-          "name": "vtt",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
-        },
-        {
-          "name": "jsonl",
+          "name": "quality_report",
           "type": "STRING",
           "links": [],
           "slot_index": 0
         }
       ],
       "properties": {
-        "Node name for S&R": "T8_FireRedAudio_LongASR"
+        "Node name for S&R": "T8_FireRedAudio_ReferenceQuality"
       },
-      "widgets_values": [
-        "Transcribe speech to text.",
-        30.0,
-        1.0,
-        300,
-        1.5
-      ]
+      "widgets_values": []
     }
   ],
   "links": [

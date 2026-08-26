@@ -16,10 +16,18 @@ from typing import Any
 
 from .constants import ALL_TASKS, CODE_REVISION, MODEL_REVISION, RUNTIME_VERSION
 from .audio_inputs import prepare_audio_path
+from .cache_manager import cache_status, cleanup_cache
 from .errors import TaskCancelledError, WorkerProtocolError
-from .long_audio import render_srt, split_pcm16_wav
+from .long_audio import (
+    deduplicate_segment_texts,
+    render_jsonl,
+    render_srt,
+    render_vtt,
+    split_pcm16_wav,
+)
 from .model_manager import model_paths, normalize_model_root, profile_for_task, validate_model_dir
 from .presets import apply_quality_preset
+from .system_info import gpu_inventory
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +90,7 @@ class FireRedAudioRuntime:
                         "liger-kernel",
                     )
                 },
+                "gpus": gpu_inventory(),
             }
         )
         return data
@@ -179,18 +188,32 @@ class FireRedAudioRuntime:
         self,
         model_root: str | Path,
         *,
-        device: str = "cuda:0",
+        device: str = "auto",
         profile: str = "full",
         memory_mode: str = "auto",
     ) -> dict[str, Any]:
         with self._lock:
-            self._load(model_root, device, profile == "full", memory_mode)
+            self._load(model_root, _resolve_device(device), profile == "full", memory_mode)
             return self.status()
 
     def unload(self) -> dict[str, Any]:
         with self._lock:
             self._unload_locked()
             return self.status()
+
+    def cache_status(self) -> dict[str, Any]:
+        return cache_status()
+
+    def cleanup_cache(
+        self, *, max_age_hours: float = 72.0, max_size_mib: float = 2048.0, clear_all: bool = False
+    ) -> dict[str, Any]:
+        # The model lock prevents deletion while a task is reading a decoded input.
+        with self._lock:
+            return cleanup_cache(
+                max_age_hours=max_age_hours,
+                max_size_mib=max_size_mib,
+                clear_all=clear_all,
+            )
 
     def _unload_locked(self, preserve_error: bool = False) -> None:
         with self._state_lock:
@@ -229,7 +252,7 @@ class FireRedAudioRuntime:
         model_root = request.get("model_root")
         if not model_root:
             raise WorkerProtocolError("缺少 model_root")
-        device = str(request.get("device") or "cuda:0")
+        device = _resolve_device(str(request.get("device") or "auto"))
         memory_mode = str(request.get("memory_mode") or "auto")
         release_after = bool(request.get("release_after", False))
         task_id = str(request.get("task_id") or uuid.uuid4())
@@ -308,12 +331,14 @@ class FireRedAudioRuntime:
             prompt = str(request.get("prompt") or "Transcribe speech to text.")
             chunk_seconds = float(request.get("chunk_seconds", 30.0))
             overlap_seconds = float(request.get("overlap_seconds", 1.0))
+            silence_search_seconds = float(request.get("silence_search_seconds", 1.5))
             with tempfile.TemporaryDirectory(prefix="fireredaudio-t8-long-asr-") as temp_dir:
                 chunks, duration = split_pcm16_wav(
                     prepared,
                     temp_dir,
                     chunk_seconds=chunk_seconds,
                     overlap_seconds=overlap_seconds,
+                    silence_search_seconds=silence_search_seconds,
                 )
                 public_segments: list[dict[str, object]] = []
                 total = max(1, len(chunks))
@@ -341,19 +366,21 @@ class FireRedAudioRuntime:
                         0.05 + 0.9 * (index + 1) / total,
                         f"已完成 {index + 1}/{total} 个分段",
                     )
-            transcript = "\n".join(
-                str(segment["text"]) for segment in public_segments if segment["text"]
-            )
+            transcript, public_segments = deduplicate_segment_texts(public_segments)
             return {
                 "answer": transcript,
                 "segments": public_segments,
                 "srt": render_srt(public_segments),
+                "vtt": render_vtt(public_segments),
+                "jsonl": render_jsonl(public_segments),
                 "duration_seconds": round(duration, 3),
                 "chunk_seconds": chunk_seconds,
                 "overlap_seconds": overlap_seconds,
+                "silence_search_seconds": silence_search_seconds,
+                "timing_accuracy": "segment-level approximate timestamps; not word alignment",
             }
 
-        if task in {"asr", "understand"}:
+        if task in {"asr", "understand", "long_locate"}:
             audio_paths = request.get("audio_paths") or request.get("audio_path")
             if not audio_paths:
                 raise WorkerProtocolError("ASR/音频理解缺少 audio_paths")
@@ -366,11 +393,15 @@ class FireRedAudioRuntime:
             result = self._engine.understand(
                 audio_paths,
                 prompt,
-                task=task,
+                task="asr" if task == "asr" else "understand",
                 enable_thinking=bool(request.get("enable_thinking", False)),
                 max_new_tokens=_optional_int(request.get("max_new_tokens")),
             )
-            return {"answer": result.answer, "reasoning": result.reasoning}
+            response = {"answer": result.answer, "reasoning": result.reasoning}
+            if task == "long_locate":
+                response["mode"] = str(request.get("mode") or "timeline_summary")
+                response["structured"] = _parse_json_answer(result.answer)
+            return response
 
         output_path = _validated_output_path(request.get("output_path"))
         common = {
@@ -477,6 +508,24 @@ def _optional_int(value: Any) -> int | None:
     return int(value)
 
 
+def _parse_json_answer(value: str) -> Any | None:
+    text = str(value or "").strip()
+    candidates = [text]
+    if "```" in text:
+        for block in text.split("```"):
+            candidate = block.strip()
+            if candidate.lower().startswith("json"):
+                candidate = candidate[4:].lstrip()
+            if candidate.startswith(("{", "[")):
+                candidates.append(candidate)
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _resolve_memory_mode(requested: str, device: str, require_decoder: bool) -> str:
     if not require_decoder:
         return "full_gpu"
@@ -490,7 +539,15 @@ def _resolve_memory_mode(requested: str, device: str, require_decoder: bool) -> 
         import torch
 
         index = torch.device(device).index or 0
-        total = torch.cuda.get_device_properties(index).total_memory
-        return "sequential" if total < 36 * 1024**3 else "full_gpu"
+        free, _total = torch.cuda.mem_get_info(index)
+        return "sequential" if free < 36 * 1024**3 else "full_gpu"
     except Exception:
         return "sequential"
+
+
+def _resolve_device(requested: str) -> str:
+    value = str(requested or "auto").strip().lower()
+    if value != "auto":
+        return value
+    devices = gpu_inventory()
+    return str(devices[0]["id"]) if devices else "cpu"
