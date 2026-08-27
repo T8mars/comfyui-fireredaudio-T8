@@ -67,6 +67,10 @@ def render_timeline(
     decoded: list[tuple[dict[str, Any], np.ndarray]] = []
     for clip in normalized:
         waveform = _read_pcm16_mono(clip["path"], sample_rate)
+        if clip["loop"] and clip["duration"] > 0 and len(waveform):
+            desired = int(round((clip["in_offset"] + clip["duration"]) * sample_rate))
+            if desired > len(waveform):
+                waveform = np.tile(waveform, int(math.ceil(desired / len(waveform))))[:desired]
         start = min(len(waveform), int(round(clip["in_offset"] * sample_rate)))
         if clip["out_offset"] > 0:
             end = min(len(waveform), int(round(clip["out_offset"] * sample_rate)))
@@ -86,9 +90,12 @@ def render_timeline(
     warnings: list[str] = []
     cursor = 0
     previous_end = 0
+    output_end = 0
     for clip, waveform in decoded:
         requested = int(round(clip["position"] * sample_rate))
-        if mode == "sequence":
+        if clip["kind"] != "dialogue":
+            start_sample = requested
+        elif mode == "sequence":
             start_sample = cursor
         elif mode == "timeline":
             start_sample = max(requested, cursor)
@@ -104,8 +111,10 @@ def render_timeline(
                     f"overlay 检测到意外重叠：片段 {clip['id']}；确认后启用 allow_overlap"
                 )
         end_sample = start_sample + len(waveform)
-        cursor = max(cursor, end_sample)
-        previous_end = max(previous_end, end_sample)
+        output_end = max(output_end, end_sample)
+        if clip["kind"] == "dialogue":
+            cursor = max(cursor, end_sample)
+            previous_end = max(previous_end, end_sample)
         placements.append((clip, waveform, start_sample))
         rendered_clips.append(
             RenderedClip(
@@ -120,7 +129,22 @@ def render_timeline(
                 source_out=round((int(round(clip["in_offset"] * sample_rate)) + len(waveform)) / sample_rate, 6),
             )
         )
-    mix = np.zeros(cursor, dtype=np.float32)
+    dialogue_intervals = [
+        (start_sample, start_sample + len(waveform))
+        for clip, waveform, start_sample in placements
+        if clip["kind"] == "dialogue"
+    ]
+    for clip, waveform, start_sample in placements:
+        if clip["kind"] == "dialogue" or clip["ducking_db"] >= 0:
+            continue
+        _apply_ducking(
+            waveform,
+            clip_start=start_sample,
+            dialogue_intervals=dialogue_intervals,
+            gain_db=clip["ducking_db"],
+            sample_rate=sample_rate,
+        )
+    mix = np.zeros(output_end, dtype=np.float32)
     for _clip, waveform, start_sample in placements:
         mix[start_sample : start_sample + len(waveform)] += waveform
     peak = float(np.max(np.abs(mix))) if mix.size else 0.0
@@ -197,6 +221,9 @@ def _normalize_clip(index: int, value: dict[str, Any]) -> dict[str, Any]:
         "fade_in": max(0.0, float(value.get("fade_in") or 0.0)),
         "fade_out": max(0.0, float(value.get("fade_out") or 0.0)),
         "muted": bool(value.get("muted", False)),
+        "kind": str(value.get("kind") or value.get("production_kind") or "dialogue")[:40],
+        "ducking_db": min(0.0, float(value.get("ducking_db") or 0.0)),
+        "loop": bool(value.get("loop", False)),
     }
 
 
@@ -221,6 +248,39 @@ def _apply_fades(waveform: np.ndarray, fade_in: float, fade_out: float, sample_r
         waveform[:in_samples] *= np.linspace(0.0, 1.0, in_samples, dtype=np.float32)
     if out_samples > 0:
         waveform[-out_samples:] *= np.linspace(1.0, 0.0, out_samples, dtype=np.float32)
+
+
+def _apply_ducking(
+    waveform: np.ndarray,
+    *,
+    clip_start: int,
+    dialogue_intervals: Iterable[tuple[int, int]],
+    gain_db: float,
+    sample_rate: int,
+) -> None:
+    if waveform.size == 0 or gain_db >= 0:
+        return
+    envelope = np.ones(len(waveform), dtype=np.float32)
+    duck_gain = float(10 ** (gain_db / 20.0))
+    ramp = max(1, int(round(0.08 * sample_rate)))
+    clip_end = clip_start + len(waveform)
+    for dialogue_start, dialogue_end in dialogue_intervals:
+        overlap_start = max(clip_start, dialogue_start)
+        overlap_end = min(clip_end, dialogue_end)
+        if overlap_end <= overlap_start:
+            continue
+        local_start = overlap_start - clip_start
+        local_end = overlap_end - clip_start
+        envelope[local_start:local_end] = np.minimum(envelope[local_start:local_end], duck_gain)
+        attack_start = max(0, local_start - ramp)
+        if attack_start < local_start:
+            attack = np.linspace(1.0, duck_gain, local_start - attack_start, endpoint=False, dtype=np.float32)
+            envelope[attack_start:local_start] = np.minimum(envelope[attack_start:local_start], attack)
+        release_end = min(len(waveform), local_end + ramp)
+        if local_end < release_end:
+            release = np.linspace(duck_gain, 1.0, release_end - local_end, endpoint=False, dtype=np.float32)
+            envelope[local_end:release_end] = np.minimum(envelope[local_end:release_end], release)
+    waveform *= envelope
 
 
 def _write_pcm16_atomic(path: Path, waveform: np.ndarray, sample_rate: int) -> None:

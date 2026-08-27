@@ -143,7 +143,10 @@ def _parse_srt(text: str, default_speaker: str) -> tuple[list[dict[str, Any]], l
                 "target_end": _parse_timestamp(match.group(2)),
                 "language": "zh",
                 "preset": "balanced",
-                "metadata": {"source_block": block_index + 1},
+                "metadata": {
+                    "source_block": block_index + 1,
+                    "source_index": source_index,
+                },
             }
         )
     return lines, issues

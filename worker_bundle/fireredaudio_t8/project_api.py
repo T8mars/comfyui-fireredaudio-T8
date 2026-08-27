@@ -41,8 +41,15 @@ def handle_project_request(
             "project": store.snapshot(),
         }
     if path == "/v1/project/import-script":
+        import_mode = str(payload.get("mode") or "merge").strip().lower()
+        if import_mode not in {"merge", "replace"}:
+            raise WorkerProtocolError("台词导入模式必须是 merge/replace")
         known = payload.get("known_speakers")
-        known_speakers = {str(value) for value in known} if isinstance(known, list) else None
+        known_speakers = (
+            {str(value) for value in known}
+            if isinstance(known, list)
+            else {str(value["name"]) for value in store.list_voice_profiles()}
+        )
         if payload.get("script_path"):
             parsed = parse_script_file(
                 _required(payload, "script_path"),
@@ -57,16 +64,45 @@ def handle_project_request(
                 default_speaker=str(payload.get("default_speaker") or "旁白"),
             )
         result = parsed.to_dict()
-        if bool(payload.get("commit", True)):
-            if not parsed.valid:
+        blocking_issues = [
+            issue
+            for issue in result["issues"]
+            if issue.get("severity") == "error" and issue.get("code") != "unknown_speaker"
+        ]
+        result["can_commit"] = not blocking_issues
+        result["preview"] = (
+            store.preview_script_replace(parsed.lines)
+            if import_mode == "replace"
+            else store.preview_script_merge(parsed.lines)
+        )
+        if bool(payload.get("commit", False)):
+            if blocking_issues:
                 result["committed"] = False
             else:
-                result["lines"] = store.replace_script_lines(parsed.lines)
+                if import_mode == "replace":
+                    merged = store.replace_script_lines_safe(
+                        parsed.lines,
+                        confirmation=str(payload.get("confirmation") or ""),
+                        source_format=parsed.format,
+                        source_name=str(payload.get("script_path") or "pasted-script"),
+                    )
+                    result["backup"] = merged["backup"]
+                else:
+                    merged = store.merge_script_lines(
+                        parsed.lines,
+                        source_format=parsed.format,
+                        source_name=str(payload.get("script_path") or "pasted-script"),
+                    )
+                result["lines"] = merged["lines"]
+                result["revision_id"] = merged["revision_id"]
+                result["preview"] = merged["diff"]
                 result["committed"] = True
         else:
             result["committed"] = False
         result["project"] = store.snapshot()
         return result
+    if path == "/v1/project/backups/list":
+        return {"backups": store.list_script_backups(), "project": store.snapshot()}
     if path == "/v1/project/voices/list":
         voices = store.list_voice_profiles()
         for voice in voices:
@@ -89,8 +125,59 @@ def handle_project_request(
             "voice": store.upsert_voice_profile(_mapping(payload.get("voice"))),
             "project": store.snapshot(),
         }
+    if path == "/v1/project/casting/list":
+        return {"casting": store.casting_readiness(), "project": store.snapshot()}
+    if path == "/v1/project/casting/map":
+        return {
+            "role": store.map_casting_role(
+                _required(payload, "speaker"), _required(payload, "voice_profile_id")
+            ),
+            "casting": store.casting_readiness(),
+            "project": store.snapshot(),
+        }
+    if path == "/v1/project/casting/confirm":
+        return {
+            "role": store.confirm_casting_role(
+                _required(payload, "speaker"),
+                representative_take_id=_optional(payload, "representative_take_id"),
+                confirmed=bool(payload.get("confirmed", True)),
+                notes=str(payload.get("notes") or ""),
+            ),
+            "casting": store.casting_readiness(),
+            "project": store.snapshot(),
+        }
     if path == "/v1/project/lines/list":
-        return {"lines": store.list_script_lines(), "project": store.snapshot()}
+        return {
+            "lines": store.list_script_lines(
+                include_archived=bool(payload.get("include_archived", False))
+            ),
+            "project": store.snapshot(),
+        }
+    if path == "/v1/project/lines/restore":
+        line_ids = payload.get("line_ids")
+        if not isinstance(line_ids, list):
+            raise WorkerProtocolError("归档恢复需要 line_ids 列表")
+        restored = store.restore_archived_lines(line_ids)
+        return {**restored, "project": store.snapshot()}
+    if path == "/v1/project/pronunciation/list":
+        return {"entries": store.list_pronunciation_entries(), "project": store.snapshot()}
+    if path == "/v1/project/pronunciation/upsert":
+        return {
+            "entry": store.upsert_pronunciation_entry(_mapping(payload.get("entry"))),
+            "project": store.snapshot(),
+        }
+    if path == "/v1/project/pronunciation/delete":
+        return {
+            "deleted": store.delete_pronunciation_entry(_required(payload, "entry_id")),
+            "project": store.snapshot(),
+        }
+    if path == "/v1/project/pronunciation/preview":
+        return {
+            "preview": store.pronunciation_preview(
+                str(payload.get("text") or ""), language=str(payload.get("language") or "zh")
+            ),
+            "project": store.snapshot(),
+        }
     if path == "/v1/project/lines/patch":
         return {
             "line": store.patch_script_line(
@@ -104,6 +191,7 @@ def handle_project_request(
             "jobs": store.enqueue_lines(
                 line_ids if isinstance(line_ids, list) else None,
                 force=bool(payload.get("force", False)),
+                require_casting=bool(payload.get("require_casting", False)),
             ),
             "project": store.snapshot(),
         }
@@ -117,6 +205,27 @@ def handle_project_request(
         return {"control": store.set_queue_paused(True), "project": store.snapshot()}
     if path == "/v1/project/queue/cancel-pending":
         return {"cancelled": store.cancel_pending_jobs(), "project": store.snapshot()}
+    if path == "/v1/project/queue/cancel":
+        cancellation = store.request_job_cancellation(_required(payload, "job_id"))
+        runtime_result: dict[str, Any] | None = None
+        if cancellation["needs_runtime_cancel"]:
+            if runtime is None:
+                store.clear_job_cancellations([cancellation["job_id"]])
+                raise WorkerProtocolError("当前任务缺少可取消的推理运行时")
+            status = runtime.status()
+            active_id = status.get("active_task_id")
+            if status.get("active_task") == "tts_batch":
+                runtime_result = runtime.cancel(active_id)
+            elif str(active_id or "") == str(cancellation["job_id"]):
+                runtime_result = runtime.cancel(str(cancellation["job_id"]))
+            else:
+                store.clear_job_cancellations([cancellation["job_id"]])
+                raise WorkerProtocolError("该句已离开推理阶段，请刷新队列状态")
+        return {
+            **cancellation,
+            "runtime": runtime_result,
+            "project": store.snapshot(),
+        }
     if path == "/v1/project/queue/priority":
         return {
             "job": store.set_job_priority(
@@ -166,7 +275,25 @@ def handle_project_request(
         }
     if path == "/v1/project/takes/adopt":
         return {
-            "take": store.adopt_take(_required(payload, "take_id")),
+            "take": store.adopt_take(
+                _required(payload, "take_id"),
+                timeline_clip=(
+                    _mapping(payload.get("timeline_clip"))
+                    if payload.get("timeline_clip") is not None
+                    else None
+                ),
+                force=bool(payload.get("force", False)),
+            ),
+            "project": store.snapshot(),
+        }
+    if path == "/v1/project/takes/review":
+        return {
+            "take": store.review_take(
+                _required(payload, "take_id"),
+                action=str(payload.get("action") or "note"),
+                note=None if "note" not in payload else str(payload.get("note") or ""),
+                locked=None if "locked" not in payload else bool(payload.get("locked")),
+            ),
             "project": store.snapshot(),
         }
     if path == "/v1/project/artifacts/list":
@@ -283,6 +410,20 @@ def handle_project_request(
         }
     if path == "/v1/project/timeline/list":
         return {"clips": store.list_timeline_clips(), "project": store.snapshot()}
+    if path == "/v1/project/production/list":
+        return {"clips": store.list_production_clips(), "project": store.snapshot()}
+    if path == "/v1/project/production/upsert":
+        return {
+            "clip": store.upsert_production_clip(_mapping(payload.get("clip"))),
+            "project": store.snapshot(),
+        }
+    if path == "/v1/project/production/delete":
+        return {
+            "deleted": store.delete_production_clip(_required(payload, "clip_id")),
+            "project": store.snapshot(),
+        }
+    if path == "/v1/project/delivery/preflight":
+        return {"preflight": store.delivery_preflight(), "project": store.snapshot()}
     if path == "/v1/project/timeline/upsert":
         return {
             "clip": store.upsert_timeline_clip(_mapping(payload.get("clip"))),
@@ -331,11 +472,31 @@ def handle_project_request(
         return _export_project_exchange(store)
     if path == "/v1/project/timeline/render":
         clips = payload.get("clips")
-        render_inputs = clips if isinstance(clips, list) else store.timeline_render_inputs()
+        dialogue_inputs = clips if isinstance(clips, list) else store.timeline_render_inputs()
+        production_inputs = store.production_render_inputs()
+        render_inputs = [*dialogue_inputs, *production_inputs]
         if not render_inputs:
             raise WorkerProtocolError("项目时间线没有可渲染片段")
+        delivery_mode = str(payload.get("delivery_mode") or "draft").lower()
+        if delivery_mode not in {"draft", "final"}:
+            raise WorkerProtocolError("交付模式必须是 draft/final")
+        preflight = store.delivery_preflight()
+        if delivery_mode == "final" and not preflight["ok"]:
+            messages = "；".join(issue["message"] for issue in preflight["issues"][:8])
+            raise WorkerProtocolError(f"最终交付预检未通过：{messages or '项目不完整'}")
+        if delivery_mode == "final":
+            required_line_ids = {str(value["line_id"]) for value in preflight["lines"]}
+            rendered_line_ids = {str(value.get("line_id") or "") for value in render_inputs}
+            missing_line_ids = required_line_ids - rendered_line_ids
+            if missing_line_ids:
+                raise WorkerProtocolError(
+                    f"最终交付缺少 {len(missing_line_ids)} 条已采用台词的时间线片段"
+                )
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        relative_output = str(payload.get("output_rel_path") or f"renders/render-{stamp}.wav")
+        prefix = "final" if delivery_mode == "final" else "draft"
+        relative_output = str(
+            payload.get("output_rel_path") or f"renders/{prefix}-render-{stamp}.wav"
+        )
         output = safe_project_path(store.root, relative_output)
         strategy = str(payload.get("strategy") or "timeline")
         result = render_timeline(
@@ -380,11 +541,14 @@ def handle_project_request(
         manifest_payload = {
             "schema_version": 1,
             "project": store.summary().id,
+            "delivery_mode": delivery_mode,
+            "delivery_preflight": preflight,
             "render": result.to_dict(),
             "stems": stems,
             "subtitles": subtitles,
             "quality_report": quality_report,
             "mastering": mastering,
+            "production_clips": production_inputs,
         }
         temporary = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
         temporary.write_text(
@@ -392,14 +556,21 @@ def handle_project_request(
         )
         temporary.replace(manifest_path)
         recorded = store.record_render(
-            output, manifest_path=manifest_path, quality_report=quality_report
+            output,
+            manifest_path=manifest_path,
+            quality_report=quality_report,
+            delivery_mode=delivery_mode,
+            rendered_line_ids=[str(value.get("line_id") or "") for value in render_inputs],
         )
         return {
+            "delivery_mode": delivery_mode,
+            "delivery_preflight": preflight,
             "render": result.to_dict(),
             "stems": stems,
             "subtitles": subtitles,
             "quality_report": quality_report,
             "mastering": mastering,
+            "production_clips": production_inputs,
             "manifest_path": str(manifest_path),
             "record": recorded,
             "project": store.snapshot(),
@@ -524,7 +695,7 @@ def _run_project_queue(store: ProjectStore, runtime: Any, payload: dict[str, Any
     model_root = _required(payload, "model_root")
     maximum = max(1, min(1000, int(payload.get("max_items", 1000))))
     stop_on_error = bool(payload.get("stop_on_error", False))
-    adopt = bool(payload.get("adopt", True))
+    adopt = bool(payload.get("adopt", False))
     queued = store.list_jobs(["queued"])[:maximum]
     latent_batch_size = max(1, min(32, int(payload.get("latent_batch_size", 8))))
     if (
@@ -572,6 +743,7 @@ def _run_project_queue(store: ProjectStore, runtime: Any, payload: dict[str, Any
             )
             cancelled += 1
             outcomes.append({"job_id": job_id, "status": "cancelled", "error": str(exc)})
+            store.clear_job_cancellations([job_id])
             break
         except Exception as exc:
             checkpoint = scratch.relative_to(store.root).as_posix() if scratch.exists() else None
@@ -649,16 +821,30 @@ def _run_project_queue_latent_batch(
                 )
             )
         except TaskCancelledError as exc:
+            requested_ids = store.requested_job_cancellations()
             for job, _request, scratch in prepared:
+                job_id = str(job["id"])
                 checkpoint = scratch.relative_to(store.root).as_posix() if scratch.exists() else None
-                store.update_job(
-                    str(job["id"]),
-                    status="cancelled",
-                    checkpoint_rel_path=checkpoint,
-                    error=str(exc),
-                )
-                cancelled += 1
-                outcomes.append({"job_id": job["id"], "status": "cancelled", "error": str(exc)})
+                should_cancel = not requested_ids or job_id in requested_ids
+                if should_cancel:
+                    store.update_job(
+                        job_id,
+                        status="cancelled",
+                        checkpoint_rel_path=checkpoint,
+                        error=str(exc),
+                    )
+                    cancelled += 1
+                    outcomes.append({"job_id": job_id, "status": "cancelled", "error": str(exc)})
+                else:
+                    store.update_job(
+                        job_id,
+                        status="queued",
+                        checkpoint_rel_path=checkpoint,
+                        error="同批另一句被取消，本句已自动重新排队",
+                    )
+                    outcomes.append({"job_id": job_id, "status": "queued", "error": "批次取消后重新排队"})
+            if requested_ids:
+                store.clear_job_cancellations(requested_ids)
             break
         except Exception as exc:
             for job, _request, scratch in prepared:
@@ -764,18 +950,6 @@ def _commit_project_generation(
         adopt=adopt,
     )
     _write_take_sidecar(store, take, job, request, generated, lineage)
-    if adopt:
-        settings = _mapping(job.get("payload"))
-        store.upsert_timeline_clip(
-            {
-                "id": f"line-{job['line_id']}",
-                "line_id": job["line_id"],
-                "take_id": take["id"],
-                "track": str(settings.get("speaker") or "dialogue"),
-                "position": float(settings.get("target_start") or 0.0),
-                "duration": float(generated.get("duration_seconds") or 0.0),
-            }
-        )
     store.update_job(
         str(job["id"]),
         status="completed",
@@ -824,7 +998,7 @@ def _queue_inference_request(
         "release_after": bool(payload.get("release_after", False)),
         "prompt_audio": str(prompt_audio),
         "prompt_text": prompt_text,
-        "target_text": str(settings.get("text") or ""),
+        "target_text": str(settings.get("spoken_text") or settings.get("text") or ""),
         "language": str(settings.get("language") or "zh"),
         "seed": settings.get("seed"),
         "quality_preset": str(settings.get("quality_preset") or "balanced"),
