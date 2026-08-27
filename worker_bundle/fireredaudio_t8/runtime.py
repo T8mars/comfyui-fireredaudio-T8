@@ -108,11 +108,31 @@ class FireRedAudioRuntime:
                 requested_acceleration, data.get("device") or None, capabilities
             ).to_dict()
         )
+        reference_cache = (
+            self._engine.reference_cache_status()
+            if self._engine is not None
+            and hasattr(self._engine, "reference_cache_status")
+            else {
+                "enabled": True,
+                "capacity": 4,
+                "audio_entries": 0,
+                "condition_entries": 0,
+                "cpu_bytes": 0,
+                "audio_hits": 0,
+                "audio_misses": 0,
+                "condition_hits": 0,
+                "condition_misses": 0,
+                "invalidations": 0,
+                "evictions": 0,
+                "condition_encode_seconds": 0.0,
+            }
+        )
         data.update(
             {
                 "runtime_version": RUNTIME_VERSION,
                 "code_revision": CODE_REVISION,
                 "model_revision": MODEL_REVISION,
+                "reference_cache": reference_cache,
                 "packages": packages,
                 "acceleration": {
                     "selection": selection,

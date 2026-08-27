@@ -31,8 +31,11 @@ a thin wrapper.
 import argparse
 import gc
 import logging
+import os
 import random
 import re
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -306,6 +309,21 @@ class FireRedAudioInference:
         self._progress_callback: Callable[[str, float, str], None] = (
             lambda phase, progress, message: None
         )
+        self._reference_audio_cache = OrderedDict()
+        self._reference_condition_cache = OrderedDict()
+        self._reference_path_fingerprints: dict[str, tuple[str, int, int]] = {}
+        self._reference_cache_limit = max(
+            1, min(16, int(os.environ.get("FIREREDAUDIO_REFERENCE_CACHE_SIZE", "4")))
+        )
+        self._reference_cache_counters = {
+            "audio_hits": 0,
+            "audio_misses": 0,
+            "condition_hits": 0,
+            "condition_misses": 0,
+            "invalidations": 0,
+            "evictions": 0,
+            "condition_encode_seconds": 0.0,
+        }
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
 
@@ -361,9 +379,123 @@ class FireRedAudioInference:
             **params, eos_token_id=self._eos_id, pad_token_id=self._pad_id
         )
 
-    def _read_generation_audio(self, path: str) -> torch.Tensor:
-        """Generation-side reference audio, padded to a multiple of the patch rate."""
-        return pad_to_multiple_of(read_audio(path, GENERATION_SAMPLE_RATE))
+    def _ensure_reference_caches(self) -> None:
+        """Initialize caches lazily as well, keeping lightweight test engines valid."""
+        if not hasattr(self, "_reference_audio_cache"):
+            self._reference_audio_cache = OrderedDict()
+            self._reference_condition_cache = OrderedDict()
+            self._reference_path_fingerprints = {}
+            self._reference_cache_limit = 4
+            self._reference_cache_counters = {
+                "audio_hits": 0,
+                "audio_misses": 0,
+                "condition_hits": 0,
+                "condition_misses": 0,
+                "invalidations": 0,
+                "evictions": 0,
+                "condition_encode_seconds": 0.0,
+            }
+
+    def _reference_file_key(self, value: str) -> tuple[str, int, int] | None:
+        self._ensure_reference_caches()
+        try:
+            path = Path(value).expanduser().resolve(strict=True)
+            stat = path.stat()
+        except OSError:
+            return None
+        key = (str(path), int(stat.st_size), int(stat.st_mtime_ns))
+        previous = self._reference_path_fingerprints.get(key[0])
+        if previous is not None and previous != key:
+            self._reference_audio_cache.pop(previous, None)
+            self._reference_condition_cache.pop(previous, None)
+            self._reference_cache_counters["invalidations"] += 1
+        self._reference_path_fingerprints[key[0]] = key
+        return key
+
+    def _trim_reference_cache(self, cache: OrderedDict) -> None:
+        while len(cache) > self._reference_cache_limit:
+            cache.popitem(last=False)
+            self._reference_cache_counters["evictions"] += 1
+
+    def _read_generation_audio(
+        self, path: str, cache_key: tuple[str, int, int] | None = None
+    ) -> torch.Tensor:
+        """Read/pad reference audio with file-fingerprint LRU invalidation."""
+        self._ensure_reference_caches()
+        key = cache_key if cache_key is not None else self._reference_file_key(path)
+        if key is not None and key in self._reference_audio_cache:
+            self._reference_cache_counters["audio_hits"] += 1
+            self._reference_audio_cache.move_to_end(key)
+            return self._reference_audio_cache[key]
+        self._reference_cache_counters["audio_misses"] += 1
+        audio = pad_to_multiple_of(read_audio(path, GENERATION_SAMPLE_RATE))
+        if key is not None:
+            audio = audio.detach().cpu()
+            self._reference_audio_cache[key] = audio
+            self._trim_reference_cache(self._reference_audio_cache)
+        return audio
+
+    def _reference_condition(
+        self,
+        cache_key: tuple[str, int, int],
+        vae_audios: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return reusable RedAE/Patch Encoder conditions for a TTS reference."""
+        self._ensure_reference_caches()
+        cached = self._reference_condition_cache.get(cache_key)
+        if cached is not None:
+            self._reference_cache_counters["condition_hits"] += 1
+            self._reference_condition_cache.move_to_end(cache_key)
+            self._progress_callback(
+                "reference_cache", 0.07, "已复用参考音频条件缓存"
+            )
+            return tuple(
+                tensor.to(self.device, non_blocking=self.device.type == "cuda")
+                for tensor in cached
+            )
+
+        self._reference_cache_counters["condition_misses"] += 1
+        self._progress_callback(
+            "reference_encoding", 0.06, "正在首次编码参考音频条件"
+        )
+        started = time.perf_counter()
+        ref_vae_latents, patch_encoder_latents = self.model.encode_generation_reference(
+            vae_audios.to(self.device)
+        )
+        self._reference_cache_counters["condition_encode_seconds"] += (
+            time.perf_counter() - started
+        )
+        cached = (
+            ref_vae_latents.detach().to("cpu"),
+            patch_encoder_latents.detach().to("cpu"),
+        )
+        self._reference_condition_cache[cache_key] = cached
+        self._trim_reference_cache(self._reference_condition_cache)
+        return ref_vae_latents, patch_encoder_latents
+
+    def reference_cache_status(self) -> dict:
+        self._ensure_reference_caches()
+
+        def tensor_bytes(entries) -> int:
+            return sum(
+                int(tensor.numel() * tensor.element_size())
+                for value in entries
+                for tensor in (value if isinstance(value, tuple) else (value,))
+            )
+
+        counters = dict(self._reference_cache_counters)
+        counters["condition_encode_seconds"] = round(
+            float(counters["condition_encode_seconds"]), 3
+        )
+        return {
+            "enabled": True,
+            "capacity": self._reference_cache_limit,
+            "audio_entries": len(self._reference_audio_cache),
+            "condition_entries": len(self._reference_condition_cache),
+            "cpu_bytes": tensor_bytes(self._reference_audio_cache.values())
+            + tensor_bytes(self._reference_condition_cache.values()),
+            **counters,
+        }
 
     def _run_audio_generation(
         self,
@@ -374,6 +506,7 @@ class FireRedAudioInference:
         quality_retries: int = 0,
         requested_seed: int | None = None,
         defer_decode: bool = False,
+        reference_cache_key: tuple[str, int, int] | None = None,
         **gen_kwargs,
     ) -> AudioOutput:
         """Shared path for generation tasks: encode -> generate_tts -> VAE decode."""
@@ -387,6 +520,15 @@ class FireRedAudioInference:
         self._progress_callback("input_encoding", 0.05, "正在读取并编码输入音频")
         batch = self.encoder.encode(input_chatml, input_audios)
         self._cancel_check()
+        precomputed_reference = {}
+        if reference_cache_key is not None and batch["vae_audios"].shape[0] > 0:
+            ref_vae_latents, patch_encoder_latents = self._reference_condition(
+                reference_cache_key, batch["vae_audios"]
+            )
+            precomputed_reference = {
+                "precomputed_ref_vae_latents": ref_vae_latents,
+                "precomputed_patch_encoder_latents": patch_encoder_latents,
+            }
         if quality_retries < 0:
             raise ValueError("quality_retries must be >= 0")
         quality_failures: list[str] = []
@@ -418,7 +560,11 @@ class FireRedAudioInference:
             text_ids, vae_latents = self.model.generate_tts(
                 input_ids=batch["input_ids"].to(self.device),
                 attention_mask=batch["attention_mask"].to(self.device),
-                vae_audios=batch["vae_audios"].to(self.device),
+                vae_audios=(
+                    None
+                    if precomputed_reference
+                    else batch["vae_audios"].to(self.device)
+                ),
                 vae_is_assistant=batch["vae_is_assistant"].to(self.device),
                 patch_encoder_output_attention_mask=(
                     batch["patch_encoder_output_attention_mask"].to(self.device)
@@ -426,6 +572,7 @@ class FireRedAudioInference:
                 generation_config=self._gen_config(task),
                 cancel_check=self._cancel_check,
                 progress_callback=generation_progress,
+                **precomputed_reference,
                 **gen_kwargs,
             )
             if vae_latents.shape[1] == 0:
@@ -534,6 +681,8 @@ class FireRedAudioInference:
                     prompt_text = str(item["prompt_text"])
                     target_text = str(item["target_text"])
                     language = str(item.get("language") or "zh")
+                    prompt_audio = str(item["prompt_audio"])
+                    reference_cache_key = self._reference_file_key(prompt_audio)
                     input_chatml = build_tts_prompt(
                         prompt_text,
                         target_text,
@@ -543,7 +692,9 @@ class FireRedAudioInference:
                     input_audios = [{
                         "feat_type": FEAT_TYPE_GENERATION,
                         "audio_understand": None,
-                        "audio_generation": self._read_generation_audio(str(item["prompt_audio"])),
+                        "audio_generation": self._read_generation_audio(
+                            prompt_audio, reference_cache_key
+                        ),
                         "role": "assistant",
                     }]
                     generation_keys = {
@@ -559,6 +710,7 @@ class FireRedAudioInference:
                             input_chatml,
                             input_audios,
                             defer_decode=True,
+                            reference_cache_key=reference_cache_key,
                             **{key: item[key] for key in generation_keys if key in item},
                         )
                     )
@@ -709,14 +861,18 @@ class FireRedAudioInference:
             prompt_text, target_text, language,
             self.model.config.audio_special_token_no_latent,
         )
+        reference_cache_key = self._reference_file_key(prompt_audio)
         input_audios = [{
             "feat_type": FEAT_TYPE_GENERATION,
             "audio_understand": None,
-            "audio_generation": self._read_generation_audio(prompt_audio),
+            "audio_generation": self._read_generation_audio(
+                prompt_audio, reference_cache_key
+            ),
             "role": "assistant",
         }]
         return self._run_audio_generation(
             "tts", input_chatml, input_audios,
+            reference_cache_key=reference_cache_key,
             max_new_audio_steps=max_new_audio_steps,
             min_new_audio_steps=min_new_audio_steps,
             max_new_text_tokens=max_new_text_tokens,

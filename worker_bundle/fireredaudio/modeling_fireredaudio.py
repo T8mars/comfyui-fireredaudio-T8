@@ -150,6 +150,20 @@ class FireRedAudioForCausalLM(PreTrainedModel):
         return one_vae_latents, next_backbone_input_embeds        
 
     @torch.inference_mode()
+    def encode_generation_reference(
+        self, vae_audios: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode reusable generation-side audio conditions.
+
+        The result depends only on the reference waveform and the loaded model weights,
+        not on the target text. Callers may therefore cache detached CPU copies for the
+        lifetime of one inference engine and move them back for later TTS requests.
+        """
+        ref_vae_latents = self.red_vae.encode(vae_audios).transpose(1, 2)
+        patch_encoder_latents = self.patch_encoder(ref_vae_latents, None)
+        return ref_vae_latents, patch_encoder_latents
+
+    @torch.inference_mode()
     def generate_tts(
         self,
         input_ids: torch.LongTensor,
@@ -157,6 +171,8 @@ class FireRedAudioForCausalLM(PreTrainedModel):
         vae_audios: torch.Tensor | None = None,
         vae_is_assistant: torch.Tensor | None = None,
         patch_encoder_output_attention_mask: torch.Tensor | None = None,
+        precomputed_ref_vae_latents: torch.Tensor | None = None,
+        precomputed_patch_encoder_latents: torch.Tensor | None = None,
         generation_config: GenerationConfig | None = None,
         max_new_audio_steps: int = 750,
         min_new_audio_steps: int = 0,
@@ -184,6 +200,10 @@ class FireRedAudioForCausalLM(PreTrainedModel):
                 of them sit in the assistant turn; generation continues from the last
                 such one, which is how ICL voice cloning works. Audio given in the user
                 turn leaves it False and serves as context only.
+            precomputed_ref_vae_latents / precomputed_patch_encoder_latents:
+                Optional reference condition produced by
+                ``encode_generation_reference``. Both tensors must be provided together.
+                This skips the RedAE and patch-encoder pass for repeated TTS references.
             generation_config: Controls text sampling (do_sample / temperature / top_p /
                 top_k / repetition_penalty / eos_token_id).
             max_new_audio_steps: Cap on audio chunks; each step is 4 AE latents (~160 ms).
@@ -247,9 +267,21 @@ class FireRedAudioForCausalLM(PreTrainedModel):
 
         # Step2. Scatter generation-side ref audio (VAE + patch_encoder) into <|AUDIO_NO_LATENT|>
         ref_vae_latents = None
-        if vae_audios is not None and vae_audios.shape[0] > 0:
-            ref_vae_latents = self.red_vae.encode(vae_audios).transpose(1, 2)  # (N_gen, T_vae_max, 64)
-            patch_enc_latent = self.patch_encoder(ref_vae_latents, None)        # (N_gen, T_vae_max//4, H)
+        has_precomputed_reference = (
+            precomputed_ref_vae_latents is not None
+            or precomputed_patch_encoder_latents is not None
+        )
+        if has_precomputed_reference and (
+            precomputed_ref_vae_latents is None
+            or precomputed_patch_encoder_latents is None
+        ):
+            raise ValueError("both precomputed reference tensors must be provided")
+        if has_precomputed_reference:
+            ref_vae_latents = precomputed_ref_vae_latents
+            patch_enc_latent = precomputed_patch_encoder_latents
+        elif vae_audios is not None and vae_audios.shape[0] > 0:
+            ref_vae_latents, patch_enc_latent = self.encode_generation_reference(vae_audios)
+        if ref_vae_latents is not None:
             patch_enc_raged = patch_enc_latent[patch_encoder_output_attention_mask]
             mask_gen = (input_ids == audio_no_latent_id)
             num_gen_ph = int(mask_gen.sum().item())

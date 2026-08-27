@@ -20,6 +20,7 @@ FireRedAudio 的 24 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成�
 - 载入桌面整合包导出的项目交换 JSON，复用音色库、脚本和 adopted take
 - SRT、`角色：台词`、带时间码角色脚本和 JSON 的解析与生成前预检
 - 逐条落盘、原子 manifest、内容指纹缓存和中断恢复的批量配音
+- 同一参考音频的读取、重采样、RedAE 与 Patch Encoder 条件进程内复用；文件变化或模型卸载时安全失效
 - 顺序、时间码定位和叠加三种时间线渲染，以及峰值/时间槽溢出报告
 - 成品逐条 ASR 回读、中文 CER/英文 WER、削波、静音和时长 QA
 - WAV、FLAC、MP3、OGG 音频与 SRT、VTT、TXT、JSONL 安全保存
@@ -63,6 +64,8 @@ python scripts/setup_runtime.py
 加速模式默认 `auto_safe`，使用预编译 FlashAttention 2 wheel。DeepSpeed BF16 已通过单卡完整 TTS，但仍是手动实验模式；FLA+Liger 在没有可审计 `causal-conv1d` Windows wheel 时会明确显示部分 PyTorch 回退。安装器从固定 URL 下载预编译 wheel、校验 SHA-256 和 Python/Torch/CUDA ABI，不从源码编译，也不修改 ComfyUI 宿主环境。
 
 普通单卡优先使用 `auto_safe`；`off` 用作 SDPA 对照与排障；DeepSpeed、FLA+Liger 和 Torch Compile 只有在相同真实工作流的暖机多轮中位数证明更快时才建议手动选择。当前不启用多卡。
+
+v0.7 起，同一 Worker 中重复使用相同参考音频会命中 CPU LRU 条件缓存，避免每句重复执行 RedAE/Patch Encoder。缓存按绝对路径、大小和修改时间失效，随模型 Worker 释放，不写入 ComfyUI 工程，也不长期占用 GPU 显存；命中和占用可在运行时状态中审计。
 
 ## 模型
 

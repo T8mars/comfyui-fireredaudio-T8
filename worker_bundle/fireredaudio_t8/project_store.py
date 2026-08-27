@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -26,6 +27,20 @@ PROJECT_DIRECTORIES = (
     "cache",
     "logs",
 )
+
+
+def _replace_with_retry(source: Path, target: Path, attempts: int = 8) -> None:
+    """Atomically replace a project file despite short Windows scanner locks."""
+    for attempt in range(attempts):
+        try:
+            source.replace(target)
+            return
+        except PermissionError:
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep(min(0.2, 0.01 * (2 ** attempt)))
+
+
 JOB_STATES = {
     "draft",
     "queued",
@@ -237,7 +252,7 @@ class ProjectStore:
                 if content_sha256(temporary) != digest:
                     temporary.unlink(missing_ok=True)
                     raise WorkerProtocolError("素材复制后哈希不一致")
-                temporary.replace(target)
+                _replace_with_retry(temporary, target)
             relative = target.relative_to(self.root).as_posix()
         else:
             relative = source_path.as_posix()
@@ -572,7 +587,7 @@ class ProjectStore:
         value = {"paused": bool(paused), "updated_at": utc_now()}
         temporary = path.with_suffix(path.suffix + f".{uuid.uuid4().hex}.tmp")
         temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(path)
+        _replace_with_retry(temporary, path)
         self._touch("queue", None, "paused" if paused else "continued", {})
         return value
 
@@ -672,7 +687,7 @@ class ProjectStore:
         temporary = target.with_suffix(target.suffix + ".tmp")
         shutil.copy2(source, temporary)
         digest = content_sha256(temporary)
-        temporary.replace(target)
+        _replace_with_retry(temporary, target)
         now = utc_now()
         with self.connection() as connection:
             if connection.execute(
@@ -1202,11 +1217,16 @@ class ProjectStore:
 
     def _write_manifest(self) -> None:
         payload = self.snapshot()
-        temporary = self.manifest_path.with_suffix(".json.tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        temporary = self.manifest_path.with_suffix(
+            self.manifest_path.suffix + f".{uuid.uuid4().hex}.tmp"
         )
-        temporary.replace(self.manifest_path)
+        try:
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            _replace_with_retry(temporary, self.manifest_path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _locator_marker_candidates(structured: Any) -> list[dict[str, Any]]:
