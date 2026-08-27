@@ -1,0 +1,56 @@
+{
+  "1": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "candidate_a.wav"
+    }
+  },
+  "2": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "candidate_b.wav"
+    }
+  },
+  "3": {
+    "class_type": "T8_FireRedAudio_SynchronizedAB",
+    "inputs": {
+      "audio_a": [
+        "1",
+        0
+      ],
+      "audio_b": [
+        "2",
+        0
+      ],
+      "synchronize_onset": true,
+      "match_loudness": true,
+      "target_lufs": -20.0,
+      "onset_threshold_dbfs": -42.0,
+      "preroll_ms": 20
+    }
+  },
+  "4": {
+    "class_type": "T8_FireRedAudio_SaveAudio",
+    "inputs": {
+      "audio": [
+        "3",
+        0
+      ],
+      "audio_format": "wav",
+      "filename_prefix": "comparison-A",
+      "subfolder": "fireredaudio/comparisons"
+    }
+  },
+  "5": {
+    "class_type": "T8_FireRedAudio_SaveAudio",
+    "inputs": {
+      "audio": [
+        "3",
+        1
+      ],
+      "audio_format": "wav",
+      "filename_prefix": "comparison-B",
+      "subfolder": "fireredaudio/comparisons"
+    }
+  }
+}

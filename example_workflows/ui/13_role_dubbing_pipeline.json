@@ -431,7 +431,7 @@
       ],
       "size": [
         390,
-        280
+        340
       ],
       "flags": {},
       "order": 9,
@@ -465,6 +465,8 @@
       "widgets_values": [
         "timeline",
         120,
+        0,
+        false,
         "limit",
         24000
       ]

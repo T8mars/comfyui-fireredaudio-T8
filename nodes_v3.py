@@ -13,6 +13,7 @@ from typing import Any
 
 from comfy_api.latest import ComfyExtension, io
 
+from .runtime.acoustic import acoustic_instruction
 from .runtime.audio_adapter import (
     _safe_name,
     _safe_output_dir,
@@ -22,7 +23,6 @@ from .runtime.audio_adapter import (
     save_text_file,
     wav_to_audio,
 )
-from .runtime.acoustic import acoustic_instruction
 from .runtime.model_discovery import (
     MISSING_MODEL_OPTION,
     fingerprint,
@@ -32,6 +32,7 @@ from .runtime.model_discovery import (
     resolve_model,
     validate_sizes,
 )
+from .runtime.postproduction import prepare_synchronized_ab
 from .runtime.production import (
     MANIFEST_VERSION,
     AudioBatch,
@@ -51,7 +52,13 @@ from .runtime.production import (
     wav_metrics,
     write_manifest,
 )
-from .runtime.types import GenerationSettings, RuntimeHandle
+from .runtime.types import (
+    DELIVERY_PRESETS,
+    DeliveryPreset,
+    GenerationSettings,
+    RuntimeHandle,
+    delivery_preset,
+)
 from .runtime.worker_manager import WORKER_MANAGER
 
 LOGGER = logging.getLogger(__name__)
@@ -63,6 +70,7 @@ VoiceBankType = io.Custom("T8_FIREREDAUDIO_VOICE_BANK")
 ScriptPlanType = io.Custom("T8_FIREREDAUDIO_SCRIPT_PLAN")
 AudioBatchType = io.Custom("T8_FIREREDAUDIO_AUDIO_BATCH")
 SpeechQAType = io.Custom("T8_FIREREDAUDIO_SPEECH_QA")
+DeliveryPresetType = io.Custom("T8_FIREREDAUDIO_DELIVERY_PRESET")
 
 LONG_LOCATE_PROMPTS = {
     "timeline_summary": (
@@ -354,6 +362,34 @@ class T8FireRedAudioGenerationSettings(io.ComfyNode):
     @classmethod
     def execute(cls, quality_preset: str, seed: int, max_new_audio_steps: int, min_new_audio_steps: int, max_new_text_tokens: int, n_timesteps: int, inference_cfg: float) -> io.NodeOutput:
         return io.NodeOutput(GenerationSettings(quality_preset, seed, max_new_audio_steps, min_new_audio_steps, max_new_text_tokens, n_timesteps, inference_cfg))
+
+
+class T8FireRedAudioDeliveryPreset(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_DeliveryPreset",
+            display_name="FireRedAudio 交付预设 · T8star-Aix",
+            category=CATEGORY,
+            description="一次设置有声书、播客或视频对白的排列、交叉淡化、EBU R128 响度、True Peak、采样率和保存格式。",
+            inputs=[
+                io.Combo.Input(
+                    "preset_name",
+                    display_name="交付场景",
+                    options=list(DELIVERY_PRESETS),
+                    default="audiobook",
+                )
+            ],
+            outputs=[
+                DeliveryPresetType.Output("delivery_preset", display_name="交付预设"),
+                io.String.Output("preset_report", display_name="预设详情"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, preset_name: str) -> io.NodeOutput:
+        preset = delivery_preset(preset_name)
+        return io.NodeOutput(preset, _json(preset.to_dict()))
 
 
 class T8FireRedAudioASR(io.ComfyNode):
@@ -1111,6 +1147,60 @@ class T8FireRedAudioBatchDubbing(io.ComfyNode):
         return io.NodeOutput(batch, str(manifest_path), _json(report))
 
 
+class T8FireRedAudioSynchronizedAB(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_SynchronizedAB",
+            display_name="FireRedAudio 同步 A/B 对比 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="非破坏地对齐两个候选的有效声音起点、匹配 EBU R128 响度并补齐相同长度，便于公平盲听。",
+            inputs=[
+                io.Audio.Input("audio_a", display_name="候选 A"),
+                io.Audio.Input("audio_b", display_name="候选 B"),
+                io.Boolean.Input("synchronize_onset", display_name="同步有效声音起点", default=True),
+                io.Boolean.Input("match_loudness", display_name="匹配 EBU R128 响度", default=True),
+                io.Float.Input("target_lufs", display_name="目标 LUFS", default=-20.0, min=-35.0, max=-12.0, step=0.5),
+                io.Float.Input("onset_threshold_dbfs", display_name="起点阈值 dBFS", default=-42.0, min=-70.0, max=-10.0, step=1.0, advanced=True),
+                io.Int.Input("preroll_ms", display_name="起点前预留（毫秒）", default=20, min=0, max=500, advanced=True),
+            ],
+            outputs=[
+                io.Audio.Output("audio_a_synced", display_name="同步候选 A"),
+                io.Audio.Output("audio_b_synced", display_name="同步候选 B"),
+                io.String.Output("comparison_report", display_name="A/B 对比报告"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        audio_a: dict,
+        audio_b: dict,
+        synchronize_onset: bool,
+        match_loudness: bool,
+        target_lufs: float,
+        onset_threshold_dbfs: float,
+        preroll_ms: int,
+    ) -> io.NodeOutput:
+        source_a = audio_to_wav(audio_a, "ab-source-a")
+        source_b = audio_to_wav(audio_b, "ab-source-b")
+        output_a = output_wav_path("ab-synced-a")
+        output_b = output_wav_path("ab-synced-b")
+        report = prepare_synchronized_ab(
+            source_a,
+            source_b,
+            output_a,
+            output_b,
+            synchronize_onset=synchronize_onset,
+            match_loudness=match_loudness,
+            target_lufs=target_lufs,
+            onset_threshold_dbfs=onset_threshold_dbfs,
+            preroll_ms=preroll_ms,
+        )
+        return io.NodeOutput(wav_to_audio(output_a), wav_to_audio(output_b), _json(report))
+
+
 class T8FireRedAudioTimelineRender(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -1119,13 +1209,17 @@ class T8FireRedAudioTimelineRender(io.ComfyNode):
             display_name="FireRedAudio 时间线渲染 · T8star-Aix",
             category=CATEGORY,
             essentials_category="Audio",
-            description="把批量配音按顺序、脚本时间码或全轨叠加渲染；报告时间槽溢出、混音峰值和限幅增益。",
+            description="把批量配音按顺序、脚本时间码或全轨叠加渲染；支持相邻对白交叉淡化、room tone 自动补空隙和 EBU R128 交付预设。",
             inputs=[
                 AudioBatchType.Input("audio_batch", display_name="批量音频"),
                 io.Combo.Input("mode", display_name="排列模式", options=["sequence", "timeline", "overlay"], default="timeline"),
                 io.Int.Input("gap_ms", display_name="顺序间隔（毫秒）", default=120, min=0, max=10000),
+                io.Int.Input("crossfade_ms", display_name="交叉淡化（毫秒）", default=0, min=0, max=2000, tooltip="sequence 中大于 0 时用相邻重叠替代顺序间隔；timeline 中只处理实际重叠区域。"),
+                io.Boolean.Input("auto_fill_gaps", display_name="用 room tone 自动补空隙", default=False),
                 io.Combo.Input("peak_policy", display_name="峰值策略", options=["limit", "clip", "none"], default="limit"),
                 io.Int.Input("sample_rate", display_name="输出采样率", default=24000, min=8000, max=192000, advanced=True),
+                io.Audio.Input("room_tone_audio", display_name="可选 room tone", optional=True),
+                DeliveryPresetType.Input("delivery_preset", display_name="可选交付预设", optional=True),
             ],
             outputs=[
                 io.Audio.Output("audio", display_name="时间线音频"),
@@ -1139,8 +1233,12 @@ class T8FireRedAudioTimelineRender(io.ComfyNode):
         audio_batch: AudioBatch,
         mode: str,
         gap_ms: int,
+        crossfade_ms: int,
+        auto_fill_gaps: bool,
         peak_policy: str,
         sample_rate: int,
+        room_tone_audio: dict | None = None,
+        delivery_preset: DeliveryPreset | None = None,
         **kwargs,
     ) -> str:
         return stable_digest(
@@ -1148,8 +1246,16 @@ class T8FireRedAudioTimelineRender(io.ComfyNode):
                 "audio_batch": _audio_batch_state(audio_batch),
                 "mode": mode,
                 "gap_ms": gap_ms,
+                "crossfade_ms": crossfade_ms,
+                "auto_fill_gaps": auto_fill_gaps,
                 "peak_policy": peak_policy,
                 "sample_rate": sample_rate,
+                "room_tone": (
+                    str(audio_to_wav(room_tone_audio, "timeline-room-tone"))
+                    if room_tone_audio is not None
+                    else None
+                ),
+                "delivery_preset": delivery_preset.to_dict() if delivery_preset else None,
             }
         )
 
@@ -1159,20 +1265,42 @@ class T8FireRedAudioTimelineRender(io.ComfyNode):
         audio_batch: AudioBatch,
         mode: str,
         gap_ms: int,
+        crossfade_ms: int,
+        auto_fill_gaps: bool,
         peak_policy: str,
         sample_rate: int,
+        room_tone_audio: dict | None = None,
+        delivery_preset: DeliveryPreset | None = None,
     ) -> io.NodeOutput:
         if not isinstance(audio_batch, AudioBatch):
             raise TypeError("时间线渲染必须连接批量音频")
+        if delivery_preset is not None and not isinstance(delivery_preset, DeliveryPreset):
+            raise TypeError("交付预设输入类型无效")
+        effective_mode = delivery_preset.mode if delivery_preset else mode
+        effective_gap = delivery_preset.gap_ms if delivery_preset else gap_ms
+        effective_crossfade = delivery_preset.crossfade_ms if delivery_preset else crossfade_ms
+        effective_sample_rate = delivery_preset.sample_rate if delivery_preset else sample_rate
+        room_tone_path = (
+            audio_to_wav(room_tone_audio, "timeline-room-tone")
+            if room_tone_audio is not None
+            else None
+        )
         output = output_wav_path("timeline-render")
         report = render_timeline_to_wav(
             audio_batch.items,
             output,
-            mode=mode,
-            gap_ms=gap_ms,
+            mode=effective_mode,
+            gap_ms=effective_gap,
+            crossfade_ms=effective_crossfade,
             peak_policy=peak_policy,
-            sample_rate=sample_rate,
+            sample_rate=effective_sample_rate,
+            gap_fill_path=room_tone_path,
+            auto_fill_gaps=auto_fill_gaps,
+            target_lufs=(delivery_preset.target_lufs if delivery_preset else None),
+            loudness_range_lu=(delivery_preset.loudness_range_lu if delivery_preset else 7.0),
+            true_peak_dbfs=(delivery_preset.true_peak_dbfs if delivery_preset else -1.0),
         )
+        report["delivery_preset"] = delivery_preset.to_dict() if delivery_preset else None
         return io.NodeOutput(wav_to_audio(output), _json(report))
 
 
@@ -1323,13 +1451,29 @@ class T8FireRedAudioSaveAudio(io.ComfyNode):
                 io.Combo.Input("audio_format", display_name="格式", options=["wav", "flac", "mp3", "ogg"], default="wav"),
                 io.String.Input("filename_prefix", display_name="文件名前缀", default="fireredaudio"),
                 io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio"),
+                DeliveryPresetType.Input("delivery_preset", display_name="可选交付预设", optional=True),
             ],
             outputs=[io.String.Output("saved_path", display_name="保存路径")],
         )
 
     @classmethod
-    def execute(cls, audio: dict, audio_format: str, filename_prefix: str, subfolder: str) -> io.NodeOutput:
-        target = save_audio_file(audio, filename_prefix=filename_prefix, subfolder=subfolder, audio_format=audio_format)
+    def execute(
+        cls,
+        audio: dict,
+        audio_format: str,
+        filename_prefix: str,
+        subfolder: str,
+        delivery_preset: DeliveryPreset | None = None,
+    ) -> io.NodeOutput:
+        if delivery_preset is not None and not isinstance(delivery_preset, DeliveryPreset):
+            raise TypeError("交付预设输入类型无效")
+        effective_format = delivery_preset.audio_format if delivery_preset else audio_format
+        target = save_audio_file(
+            audio,
+            filename_prefix=filename_prefix,
+            subfolder=subfolder,
+            audio_format=effective_format,
+        )
         return io.NodeOutput(str(target))
 
 
@@ -1430,6 +1574,7 @@ class T8FireRedAudioExtension(ComfyExtension):
         return [
             T8FireRedAudioModelLoader,
             T8FireRedAudioGenerationSettings,
+            T8FireRedAudioDeliveryPreset,
             T8FireRedAudioASR,
             T8FireRedAudioLongASR,
             T8FireRedAudioLongLocator,
@@ -1446,6 +1591,7 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioVoiceBank,
             T8FireRedAudioScriptParser,
             T8FireRedAudioBatchDubbing,
+            T8FireRedAudioSynchronizedAB,
             T8FireRedAudioTimelineRender,
             T8FireRedAudioSpeechQA,
             T8FireRedAudioSaveAudio,

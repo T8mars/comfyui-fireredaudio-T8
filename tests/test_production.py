@@ -3,12 +3,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+import shutil
 import sys
 import tempfile
 import unittest
 import wave
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -19,11 +19,38 @@ assert SPEC and SPEC.loader
 sys.modules[SPEC.name] = PRODUCTION
 SPEC.loader.exec_module(PRODUCTION)
 
+POST_SPEC = importlib.util.spec_from_file_location(
+    "fireredaudio_postproduction", ROOT / "runtime" / "postproduction.py"
+)
+POSTPRODUCTION = importlib.util.module_from_spec(POST_SPEC)
+assert POST_SPEC and POST_SPEC.loader
+sys.modules[POST_SPEC.name] = POSTPRODUCTION
+POST_SPEC.loader.exec_module(POSTPRODUCTION)
+
 
 def write_tone(path: Path, *, seconds: float = 0.1, sample_rate: int = 24000, frequency: float = 440.0) -> None:
     frames = bytearray()
     for index in range(round(seconds * sample_rate)):
         value = round(math.sin(2 * math.pi * frequency * index / sample_rate) * 8000)
+        frames.extend(int(value).to_bytes(2, byteorder="little", signed=True))
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(frames)
+
+
+def write_delayed_tone(
+    path: Path,
+    *,
+    silence_seconds: float,
+    tone_seconds: float = 0.5,
+    sample_rate: int = 24000,
+    amplitude: int = 8000,
+) -> None:
+    frames = bytearray(round(silence_seconds * sample_rate) * 2)
+    for index in range(round(tone_seconds * sample_rate)):
+        value = round(math.sin(2 * math.pi * 440.0 * index / sample_rate) * amplitude)
         frames.extend(int(value).to_bytes(2, byteorder="little", signed=True))
     with wave.open(str(path), "wb") as writer:
         writer.setnchannels(1)
@@ -204,6 +231,91 @@ class ProductionWorkflowTests(unittest.TestCase):
         self.assertAlmostEqual(overlay["duration_seconds"], 0.1, places=3)
         self.assertEqual(len(overlay["placements"]), 2)
 
+    def test_timeline_crossfade_overlaps_adjacent_sequence_clips(self) -> None:
+        items = [
+            {"line_id": "a", "status": "complete", "output_path": str(self.narrator_wav)},
+            {"line_id": "b", "status": "complete", "output_path": str(self.actor_wav)},
+        ]
+        target = self.root / "crossfade.wav"
+        report = PRODUCTION.render_timeline_to_wav(
+            items,
+            target,
+            mode="sequence",
+            gap_ms=500,
+            crossfade_ms=50,
+            peak_policy="limit",
+        )
+        self.assertAlmostEqual(report["duration_seconds"], 0.15, places=3)
+        self.assertEqual(len(report["crossfades"]), 1)
+        self.assertAlmostEqual(report["crossfades"][0]["duration_seconds"], 0.05, places=3)
+
+    def test_timeline_room_tone_fills_only_real_gaps(self) -> None:
+        items = [
+            {
+                "line_id": "a",
+                "status": "complete",
+                "output_path": str(self.narrator_wav),
+                "start_seconds": 0.0,
+            },
+            {
+                "line_id": "b",
+                "status": "complete",
+                "output_path": str(self.actor_wav),
+                "start_seconds": 0.3,
+            },
+        ]
+        room_tone = self.root / "room-tone.wav"
+        write_tone(room_tone, seconds=0.05, frequency=80.0)
+        target = self.root / "filled.wav"
+        report = PRODUCTION.render_timeline_to_wav(
+            items,
+            target,
+            mode="timeline",
+            gap_ms=0,
+            gap_fill_path=room_tone,
+            auto_fill_gaps=True,
+        )
+        self.assertEqual(len(report["filled_gaps"]), 1)
+        self.assertAlmostEqual(report["filled_gaps"][0]["duration_seconds"], 0.2, places=3)
+        audio, sample_rate = PRODUCTION._read_wav_tensor(target)
+        gap = audio[:, round(0.14 * sample_rate) : round(0.26 * sample_rate)]
+        self.assertGreater(float(gap.abs().max().item()), 0.01)
+
+    @unittest.skipUnless(
+        (ROOT / "tools" / "ffmpeg.exe").is_file() or shutil.which("ffmpeg"),
+        "FFmpeg is required for synchronized loudness A/B",
+    )
+    def test_synchronized_ab_aligns_onsets_matches_loudness_and_preserves_sources(self) -> None:
+        source_a = self.root / "delayed-a.wav"
+        source_b = self.root / "delayed-b.wav"
+        output_a = self.root / "synced-a.wav"
+        output_b = self.root / "synced-b.wav"
+        write_delayed_tone(source_a, silence_seconds=0.15, amplitude=5000)
+        write_delayed_tone(source_b, silence_seconds=0.35, amplitude=12000)
+        digest_a = PRODUCTION.file_digest(source_a)
+        digest_b = PRODUCTION.file_digest(source_b)
+        report = POSTPRODUCTION.prepare_synchronized_ab(
+            source_a,
+            source_b,
+            output_a,
+            output_b,
+            target_lufs=-20.0,
+            preroll_ms=20,
+        )
+        self.assertEqual(PRODUCTION.file_digest(source_a), digest_a)
+        self.assertEqual(PRODUCTION.file_digest(source_b), digest_b)
+        self.assertTrue(report["source_preserved"])
+        self.assertGreater(report["B"]["trimmed_seconds"], report["A"]["trimmed_seconds"])
+        audio_a, rate_a = PRODUCTION._read_wav_tensor(output_a)
+        audio_b, rate_b = PRODUCTION._read_wav_tensor(output_b)
+        self.assertEqual(rate_a, rate_b)
+        self.assertEqual(audio_a.shape, audio_b.shape)
+        loudness_a = report["A"]["after"]["integrated_lufs"]
+        loudness_b = report["B"]["after"]["integrated_lufs"]
+        self.assertIsNotNone(loudness_a)
+        self.assertIsNotNone(loudness_b)
+        self.assertLess(abs(float(loudness_a) - float(loudness_b)), 0.3)
+
     def test_text_error_rate_uses_cer_for_zh_and_wer_for_en(self) -> None:
         metric, value = PRODUCTION.text_error_rate("你好，世界", "你好世界", "zh")
         self.assertEqual(metric, "cer")
@@ -271,6 +383,45 @@ class ExampleWorkflowTests(unittest.TestCase):
         self.assertEqual(api[cleanup_id]["inputs"]["audio"], [quality_id, 0])
         self.assertTrue(api[cleanup_id]["inputs"]["trim_silence"])
         self.assertFalse(api[cleanup_id]["inputs"]["normalize_loudness"])
+
+    def test_srt_delivery_example_connects_room_tone_and_named_preset(self) -> None:
+        api = json.loads(
+            (ROOT / "example_workflows" / "api" / "14_srt_dubbing_pipeline.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        preset_id = next(
+            node_id
+            for node_id, value in api.items()
+            if value["class_type"] == "T8_FireRedAudio_DeliveryPreset"
+        )
+        timeline = next(
+            value for value in api.values() if value["class_type"] == "T8_FireRedAudio_TimelineRender"
+        )
+        save_audio = next(
+            value for value in api.values() if value["class_type"] == "T8_FireRedAudio_SaveAudio"
+        )
+        self.assertTrue(timeline["inputs"]["auto_fill_gaps"])
+        self.assertIn("room_tone_audio", timeline["inputs"])
+        self.assertEqual(timeline["inputs"]["delivery_preset"], [preset_id, 0])
+        self.assertEqual(save_audio["inputs"]["delivery_preset"], [preset_id, 0])
+
+    def test_synchronized_ab_example_has_two_independent_saved_outputs(self) -> None:
+        api = json.loads(
+            (ROOT / "example_workflows" / "api" / "16_synchronized_ab.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        compare_id = next(
+            node_id
+            for node_id, value in api.items()
+            if value["class_type"] == "T8_FireRedAudio_SynchronizedAB"
+        )
+        saves = [
+            value for value in api.values() if value["class_type"] == "T8_FireRedAudio_SaveAudio"
+        ]
+        self.assertEqual(len(saves), 2)
+        self.assertEqual({tuple(value["inputs"]["audio"]) for value in saves}, {(compare_id, 0), (compare_id, 1)})
 
     def test_all_ui_examples_keep_auto_safe_in_model_loader_widget(self) -> None:
         for path in sorted((ROOT / "example_workflows" / "ui").glob("*.json")):

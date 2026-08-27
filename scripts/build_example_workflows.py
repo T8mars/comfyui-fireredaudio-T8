@@ -161,7 +161,7 @@ def build() -> None:
     parser = node(7, "T8_FireRedAudio_ScriptParser", [1240, 460], ["旁白：欢迎收听本期节目。\n[00:00:03,000 --> 00:00:06,000] 小夏：大家好，我是小夏。", "role_script", "旁白", False], [port("voice_bank", "T8_FIREREDAUDIO_VOICE_BANK", 6)], [out("script_plan", "T8_FIREREDAUDIO_SCRIPT_PLAN", [7]), out("normalized_json", "STRING"), out("preflight_report", "STRING")], [430, 360])
     production_settings = node(8, "T8_FireRedAudio_GenerationSettings", [470, 80], ["balanced", 42, 750, 6, 512, 10, 2.0], [], [out("settings", "T8_FIREREDAUDIO_SETTINGS", [9])], [320, 280])
     batch = node(9, "T8_FireRedAudio_BatchDubbing", [1740, 330], ["role-demo", "fireredaudio/projects", True, True], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("script_plan", "T8_FIREREDAUDIO_SCRIPT_PLAN", 7), port("voice_bank", "T8_FIREREDAUDIO_VOICE_BANK", 8), port("settings", "T8_FIREREDAUDIO_SETTINGS", 9)], [out("audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", [11, 12]), out("manifest_path", "STRING"), out("batch_report", "STRING")], [430, 330])
-    timeline = node(10, "T8_FireRedAudio_TimelineRender", [2230, 250], ["timeline", 120, "limit", 24000], [port("audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", 11)], [out("audio", "AUDIO", [13]), out("timeline_report", "STRING")], [390, 280])
+    timeline = node(10, "T8_FireRedAudio_TimelineRender", [2230, 250], ["timeline", 120, 0, False, "limit", 24000], [port("audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", 11)], [out("audio", "AUDIO", [13]), out("timeline_report", "STRING")], [390, 340])
     speech_qa = node(11, "T8_FireRedAudio_SpeechQA", [2230, 590], [0.2, 0.001, 0.8, 0.5, 512], [port("model", "T8_FIREREDAUDIO_MODEL", 10), port("audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", 12)], [out("qa", "T8_FIREREDAUDIO_SPEECH_QA"), out("qa_report", "STRING"), out("failed_line_ids", "STRING")], [420, 330])
     production_save = node(12, "T8_FireRedAudio_SaveAudio", [2700, 270], ["wav", "role-demo-mix", "fireredaudio/renders"], [port("audio", "AUDIO", 13)], [out("saved_path", "STRING")], [360, 220])
     role_links = [
@@ -184,7 +184,7 @@ def build() -> None:
         "7": {"class_type": "T8_FireRedAudio_ScriptParser", "inputs": {"voice_bank": ["6", 0], "script": "旁白：欢迎收听本期节目。\n[00:00:03,000 --> 00:00:06,000] 小夏：大家好，我是小夏。", "source_format": "role_script", "default_speaker": "旁白", "strict_validation": False}},
         "8": {"class_type": "T8_FireRedAudio_GenerationSettings", "inputs": {"quality_preset": "balanced", "seed": 42, "max_new_audio_steps": 750, "min_new_audio_steps": 6, "max_new_text_tokens": 512, "n_timesteps": 10, "inference_cfg": 2.0}},
         "9": {"class_type": "T8_FireRedAudio_BatchDubbing", "inputs": {"model": ["1", 0], "script_plan": ["7", 0], "voice_bank": ["6", 0], "project_name": "role-demo", "subfolder": "fireredaudio/projects", "resume": True, "continue_on_error": True, "settings": ["8", 0]}},
-        "10": {"class_type": "T8_FireRedAudio_TimelineRender", "inputs": {"audio_batch": ["9", 0], "mode": "timeline", "gap_ms": 120, "peak_policy": "limit", "sample_rate": 24000}},
+        "10": {"class_type": "T8_FireRedAudio_TimelineRender", "inputs": {"audio_batch": ["9", 0], "mode": "timeline", "gap_ms": 120, "crossfade_ms": 0, "auto_fill_gaps": False, "peak_policy": "limit", "sample_rate": 24000}},
         "11": {"class_type": "T8_FireRedAudio_SpeechQA", "inputs": {"model": ["1", 0], "audio_batch": ["9", 0], "max_text_error_rate": 0.2, "max_clipping_ratio": 0.001, "max_silence_ratio": 0.8, "max_cue_overrun_seconds": 0.5, "max_new_tokens": 512}},
         "12": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["10", 0], "audio_format": "wav", "filename_prefix": "role-demo-mix", "subfolder": "fireredaudio/renders"}},
     })
@@ -195,10 +195,12 @@ def build() -> None:
     srt_parser = node(5, "T8_FireRedAudio_ScriptParser", [1250, 350], ["1\n00:00:00,000 --> 00:00:02,500\n[旁白] 第一条字幕。\n\n2\n00:00:03,000 --> 00:00:05,500\n[旁白] 第二条字幕。", "srt", "旁白", True], [port("voice_bank", "T8_FIREREDAUDIO_VOICE_BANK", 4)], [out("script_plan", "T8_FIREREDAUDIO_SCRIPT_PLAN", [5]), out("normalized_json", "STRING"), out("preflight_report", "STRING")], [430, 390])
     srt_settings = node(6, "T8_FireRedAudio_GenerationSettings", [470, 70], ["balanced", 42, 750, 6, 512, 10, 2.0], [], [out("settings", "T8_FIREREDAUDIO_SETTINGS", [7])], [320, 280])
     srt_batch = node(7, "T8_FireRedAudio_BatchDubbing", [1730, 300], ["srt-demo", "fireredaudio/projects", True, False], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("script_plan", "T8_FIREREDAUDIO_SCRIPT_PLAN", 5), port("voice_bank", "T8_FIREREDAUDIO_VOICE_BANK", 6), port("settings", "T8_FIREREDAUDIO_SETTINGS", 7)], [out("audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", [8]), out("manifest_path", "STRING"), out("batch_report", "STRING")], [430, 330])
-    srt_timeline = node(8, "T8_FireRedAudio_TimelineRender", [2220, 330], ["timeline", 120, "limit", 24000], [port("audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", 8)], [out("audio", "AUDIO", [9]), out("timeline_report", "STRING")], [390, 280])
-    srt_save = node(9, "T8_FireRedAudio_SaveAudio", [2670, 350], ["wav", "srt-demo-mix", "fireredaudio/renders"], [port("audio", "AUDIO", 9)], [out("saved_path", "STRING")], [360, 220])
-    srt_links = [[1, 1, 0, 7, 0, "T8_FIREREDAUDIO_MODEL"], [2, 2, 0, 3, 0, "AUDIO"], [3, 3, 0, 4, 0, "T8_FIREREDAUDIO_VOICE_PROFILE"], [4, 4, 0, 5, 0, "T8_FIREREDAUDIO_VOICE_BANK"], [5, 5, 0, 7, 1, "T8_FIREREDAUDIO_SCRIPT_PLAN"], [6, 4, 0, 7, 2, "T8_FIREREDAUDIO_VOICE_BANK"], [7, 6, 0, 7, 3, "T8_FIREREDAUDIO_SETTINGS"], [8, 7, 0, 8, 0, "T8_FIREREDAUDIO_AUDIO_BATCH"], [9, 8, 0, 9, 0, "AUDIO"]]
-    save("ui_14_srt_dubbing_pipeline", workflow([model_node([1]), srt_audio, srt_profile, srt_bank, srt_parser, srt_settings, srt_batch, srt_timeline, srt_save], srt_links))
+    srt_room_tone = node(10, "LoadAudio", [1740, 760], ["room_tone.wav", None, None], [], [out("AUDIO", "AUDIO", [10])], [300, 170])
+    srt_delivery = node(11, "T8_FireRedAudio_DeliveryPreset", [2220, 760], ["video_dialogue"], [], [out("delivery_preset", "T8_FIREREDAUDIO_DELIVERY_PRESET", [11, 12]), out("preset_report", "STRING")], [390, 190])
+    srt_timeline = node(8, "T8_FireRedAudio_TimelineRender", [2220, 330], ["timeline", 120, 0, True, "limit", 24000], [port("audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", 8), port("room_tone_audio", "AUDIO", 10), port("delivery_preset", "T8_FIREREDAUDIO_DELIVERY_PRESET", 11)], [out("audio", "AUDIO", [9]), out("timeline_report", "STRING")], [430, 380])
+    srt_save = node(9, "T8_FireRedAudio_SaveAudio", [2710, 350], ["wav", "srt-demo-mix", "fireredaudio/renders"], [port("audio", "AUDIO", 9), port("delivery_preset", "T8_FIREREDAUDIO_DELIVERY_PRESET", 12)], [out("saved_path", "STRING")], [380, 240])
+    srt_links = [[1, 1, 0, 7, 0, "T8_FIREREDAUDIO_MODEL"], [2, 2, 0, 3, 0, "AUDIO"], [3, 3, 0, 4, 0, "T8_FIREREDAUDIO_VOICE_PROFILE"], [4, 4, 0, 5, 0, "T8_FIREREDAUDIO_VOICE_BANK"], [5, 5, 0, 7, 1, "T8_FIREREDAUDIO_SCRIPT_PLAN"], [6, 4, 0, 7, 2, "T8_FIREREDAUDIO_VOICE_BANK"], [7, 6, 0, 7, 3, "T8_FIREREDAUDIO_SETTINGS"], [8, 7, 0, 8, 0, "T8_FIREREDAUDIO_AUDIO_BATCH"], [9, 8, 0, 9, 0, "AUDIO"], [10, 10, 0, 8, 1, "AUDIO"], [11, 11, 0, 8, 2, "T8_FIREREDAUDIO_DELIVERY_PRESET"], [12, 11, 0, 9, 1, "T8_FIREREDAUDIO_DELIVERY_PRESET"]]
+    save("ui_14_srt_dubbing_pipeline", workflow([model_node([1]), srt_audio, srt_profile, srt_bank, srt_parser, srt_settings, srt_batch, srt_room_tone, srt_delivery, srt_timeline, srt_save], srt_links))
     save("api_14_srt_dubbing_pipeline", {
         "1": {"class_type": "T8_FireRedAudio_ModelLoader", "inputs": {"model_name": "FireRedAudio", "custom_model_path": "", "device": "auto", "memory_mode": "auto", "acceleration_mode": "auto_safe", "profile": "full", "worker_mode": "managed", "runtime_python": "", "worker_url": "", "worker_token": "", "verify_hashes": False, "release_after_run": False}},
         "2": {"class_type": "LoadAudio", "inputs": {"audio": "narrator_reference.wav"}},
@@ -207,8 +209,24 @@ def build() -> None:
         "5": {"class_type": "T8_FireRedAudio_ScriptParser", "inputs": {"voice_bank": ["4", 0], "script": "1\n00:00:00,000 --> 00:00:02,500\n[旁白] 第一条字幕。\n\n2\n00:00:03,000 --> 00:00:05,500\n[旁白] 第二条字幕。", "source_format": "srt", "default_speaker": "旁白", "strict_validation": True}},
         "6": {"class_type": "T8_FireRedAudio_GenerationSettings", "inputs": {"quality_preset": "balanced", "seed": 42, "max_new_audio_steps": 750, "min_new_audio_steps": 6, "max_new_text_tokens": 512, "n_timesteps": 10, "inference_cfg": 2.0}},
         "7": {"class_type": "T8_FireRedAudio_BatchDubbing", "inputs": {"model": ["1", 0], "script_plan": ["5", 0], "voice_bank": ["4", 0], "project_name": "srt-demo", "subfolder": "fireredaudio/projects", "resume": True, "continue_on_error": False, "settings": ["6", 0]}},
-        "8": {"class_type": "T8_FireRedAudio_TimelineRender", "inputs": {"audio_batch": ["7", 0], "mode": "timeline", "gap_ms": 120, "peak_policy": "limit", "sample_rate": 24000}},
-        "9": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["8", 0], "audio_format": "wav", "filename_prefix": "srt-demo-mix", "subfolder": "fireredaudio/renders"}},
+        "8": {"class_type": "T8_FireRedAudio_TimelineRender", "inputs": {"audio_batch": ["7", 0], "mode": "timeline", "gap_ms": 120, "crossfade_ms": 0, "auto_fill_gaps": True, "peak_policy": "limit", "sample_rate": 24000, "room_tone_audio": ["10", 0], "delivery_preset": ["11", 0]}},
+        "9": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["8", 0], "audio_format": "wav", "filename_prefix": "srt-demo-mix", "subfolder": "fireredaudio/renders", "delivery_preset": ["11", 0]}},
+        "10": {"class_type": "LoadAudio", "inputs": {"audio": "room_tone.wav"}},
+        "11": {"class_type": "T8_FireRedAudio_DeliveryPreset", "inputs": {"preset_name": "video_dialogue"}},
+    })
+
+    ab_audio_a = node(1, "LoadAudio", [60, 190], ["candidate_a.wav", None, None], [], [out("AUDIO", "AUDIO", [1])], [300, 170])
+    ab_audio_b = node(2, "LoadAudio", [60, 470], ["candidate_b.wav", None, None], [], [out("AUDIO", "AUDIO", [2])], [300, 170])
+    ab_compare = node(3, "T8_FireRedAudio_SynchronizedAB", [500, 260], [True, True, -20.0, -42.0, 20], [port("audio_a", "AUDIO", 1), port("audio_b", "AUDIO", 2)], [out("audio_a_synced", "AUDIO", [3]), out("audio_b_synced", "AUDIO", [4], slot_index=1), out("comparison_report", "STRING", slot_index=2)], [430, 350])
+    ab_save_a = node(4, "T8_FireRedAudio_SaveAudio", [1010, 190], ["wav", "comparison-A", "fireredaudio/comparisons"], [port("audio", "AUDIO", 3)], [out("saved_path", "STRING")], [370, 220])
+    ab_save_b = node(5, "T8_FireRedAudio_SaveAudio", [1010, 500], ["wav", "comparison-B", "fireredaudio/comparisons"], [port("audio", "AUDIO", 4)], [out("saved_path", "STRING")], [370, 220])
+    save("ui_16_synchronized_ab", workflow([ab_audio_a, ab_audio_b, ab_compare, ab_save_a, ab_save_b], [[1, 1, 0, 3, 0, "AUDIO"], [2, 2, 0, 3, 1, "AUDIO"], [3, 3, 0, 4, 0, "AUDIO"], [4, 3, 1, 5, 0, "AUDIO"]]))
+    save("api_16_synchronized_ab", {
+        "1": {"class_type": "LoadAudio", "inputs": {"audio": "candidate_a.wav"}},
+        "2": {"class_type": "LoadAudio", "inputs": {"audio": "candidate_b.wav"}},
+        "3": {"class_type": "T8_FireRedAudio_SynchronizedAB", "inputs": {"audio_a": ["1", 0], "audio_b": ["2", 0], "synchronize_onset": True, "match_loudness": True, "target_lufs": -20.0, "onset_threshold_dbfs": -42.0, "preroll_ms": 20}},
+        "4": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["3", 0], "audio_format": "wav", "filename_prefix": "comparison-A", "subfolder": "fireredaudio/comparisons"}},
+        "5": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["3", 1], "audio_format": "wav", "filename_prefix": "comparison-B", "subfolder": "fireredaudio/comparisons"}},
     })
 
 

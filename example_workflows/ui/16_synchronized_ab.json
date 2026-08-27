@@ -1,0 +1,257 @@
+{
+  "last_node_id": 5,
+  "last_link_id": 4,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadAudio",
+      "pos": [
+        60,
+        190
+      ],
+      "size": [
+        300,
+        170
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        "candidate_a.wav",
+        null,
+        null
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LoadAudio",
+      "pos": [
+        60,
+        470
+      ],
+      "size": [
+        300,
+        170
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        "candidate_b.wav",
+        null,
+        null
+      ]
+    },
+    {
+      "id": 3,
+      "type": "T8_FireRedAudio_SynchronizedAB",
+      "pos": [
+        500,
+        260
+      ],
+      "size": [
+        430,
+        350
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio_a",
+          "type": "AUDIO",
+          "link": 1
+        },
+        {
+          "name": "audio_b",
+          "type": "AUDIO",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio_a_synced",
+          "type": "AUDIO",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "audio_b_synced",
+          "type": "AUDIO",
+          "links": [
+            4
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "comparison_report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_SynchronizedAB"
+      },
+      "widgets_values": [
+        true,
+        true,
+        -20.0,
+        -42.0,
+        20
+      ]
+    },
+    {
+      "id": 4,
+      "type": "T8_FireRedAudio_SaveAudio",
+      "pos": [
+        1010,
+        190
+      ],
+      "size": [
+        370,
+        220
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "saved_path",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_SaveAudio"
+      },
+      "widgets_values": [
+        "wav",
+        "comparison-A",
+        "fireredaudio/comparisons"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "T8_FireRedAudio_SaveAudio",
+      "pos": [
+        1010,
+        500
+      ],
+      "size": [
+        370,
+        220
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "saved_path",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_SaveAudio"
+      },
+      "widgets_values": [
+        "wav",
+        "comparison-B",
+        "fireredaudio/comparisons"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      3,
+      0,
+      "AUDIO"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      1,
+      "AUDIO"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      0,
+      "AUDIO"
+    ],
+    [
+      4,
+      3,
+      1,
+      5,
+      0,
+      "AUDIO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9,
+      "offset": [
+        80,
+        80
+      ]
+    }
+  },
+  "version": 0.4
+}

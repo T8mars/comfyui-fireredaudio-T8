@@ -103,8 +103,18 @@
       ],
       "mode": "timeline",
       "gap_ms": 120,
+      "crossfade_ms": 0,
+      "auto_fill_gaps": true,
       "peak_policy": "limit",
-      "sample_rate": 24000
+      "sample_rate": 24000,
+      "room_tone_audio": [
+        "10",
+        0
+      ],
+      "delivery_preset": [
+        "11",
+        0
+      ]
     }
   },
   "9": {
@@ -116,7 +126,23 @@
       ],
       "audio_format": "wav",
       "filename_prefix": "srt-demo-mix",
-      "subfolder": "fireredaudio/renders"
+      "subfolder": "fireredaudio/renders",
+      "delivery_preset": [
+        "11",
+        0
+      ]
+    }
+  },
+  "10": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "room_tone.wav"
+    }
+  },
+  "11": {
+    "class_type": "T8_FireRedAudio_DeliveryPreset",
+    "inputs": {
+      "preset_name": "video_dialogue"
     }
   }
 }

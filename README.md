@@ -1,6 +1,6 @@
 # comfyui-fireredaudio-T8
 
-FireRedAudio 的 24 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点菜单：
+FireRedAudio 的 26 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点菜单：
 
 `T8star-Aix / Audio / FireRedAudio`
 
@@ -21,7 +21,9 @@ FireRedAudio 的 24 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成�
 - SRT、`角色：台词`、带时间码角色脚本和 JSON 的解析与生成前预检
 - 逐条落盘、原子 manifest、内容指纹缓存和中断恢复的批量配音
 - 同一参考音频的读取、重采样、RedAE 与 Patch Encoder 条件进程内复用；文件变化或模型卸载时安全失效
-- 顺序、时间码定位和叠加三种时间线渲染，以及峰值/时间槽溢出报告
+- 同步有效声音起点、两遍 EBU R128 响度匹配和等长补齐的公平 A/B 对比
+- 顺序、时间码定位和叠加三种时间线渲染，相邻对白交叉淡化，以及可选 room tone 自动补真实空隙
+- 有声书、播客、视频对白交付预设，统一控制排列、LUFS、LRA、True Peak、采样率和保存格式
 - 成品逐条 ASR 回读、中文 CER/英文 WER、削波、静音和时长 QA
 - WAV、FLAC、MP3、OGG 音频与 SRT、VTT、TXT、JSONL 安全保存
 - 模型校验、真实 GPU/空闲显存报告、缓存清理、显存释放和 Worker 停止
@@ -63,7 +65,7 @@ python scripts/setup_runtime.py
 
 加速模式默认 `auto_safe`，使用预编译 FlashAttention 2 wheel。DeepSpeed BF16 已通过单卡完整 TTS，但仍是手动实验模式；FLA+Liger 在没有可审计 `causal-conv1d` Windows wheel 时会明确显示部分 PyTorch 回退。安装器从固定 URL 下载预编译 wheel、校验 SHA-256 和 Python/Torch/CUDA ABI，不从源码编译，也不修改 ComfyUI 宿主环境。
 
-普通单卡优先使用 `auto_safe`；`off` 用作 SDPA 对照与排障；DeepSpeed、FLA+Liger 和 Torch Compile 只有在相同真实工作流的暖机多轮中位数证明更快时才建议手动选择。当前不启用多卡。
+普通单卡优先使用 `auto_safe`；`off` 用作 SDPA 对照与排障；DeepSpeed、FLA+Liger 和 Torch Compile 只有在相同真实工作流的暖机多轮中位数至少快 20% 时才建议手动选择。当前不启用多卡。
 
 v0.7 起，同一 Worker 中重复使用相同参考音频会命中 CPU LRU 条件缓存，避免每句重复执行 RedAE/Patch Encoder。缓存按绝对路径、大小和修改时间失效，随模型 Worker 释放，不写入 ComfyUI 工程，也不长期占用 GPU 显存；命中和占用可在运行时状态中审计。
 
@@ -94,7 +96,7 @@ python scripts/download_models.py --target "D:\ComfyUI\models\TTS\FireRedAudio" 
 3. 可选连接 `FireRedAudio 生成参数`。
 4. TTS 输出连接 `FireRedAudio 保存音频`，可选择 WAV/FLAC/MP3/OGG。
 
-示例见 `example_workflows/ui` 和 `example_workflows/api`，其中 `15_reference_cleanup` 演示参考音频质检后再生成不覆盖源文件的清理副本。该节点不会执行降噪、去混响或削波伪修复。
+示例见 `example_workflows/ui` 和 `example_workflows/api`。`15_reference_cleanup` 演示参考音频质检后再生成不覆盖源文件的清理副本；`16_synchronized_ab` 演示两个候选同步起点、匹配响度并分别保存。参考清理不会执行降噪、去混响或削波伪修复。
 
 长音频字幕是静音感知的分段级近似时间，不是词级强制对齐。上游生成目前仅支持单样本，批量工作流应顺序执行，不能视为原生 GPU batch。
 
@@ -109,6 +111,22 @@ Load Audio → 音色档案 ├→ 音色库 → 角色脚本/SRT 预检 → 可
 模型/隔离运行时 ───────────────────────────────────────└→ 成品语音 QA
 ```
 
+制作交付可继续连接：
+
+```text
+候选 A ┐
+       ├→ 同步 A/B 对比 → 分别试听/保存
+候选 B ┘
+
+可恢复批量配音 ────────────────┐
+room tone ─────────────────────┼→ 时间线渲染 → 保存音频
+有声书/播客/视频对白交付预设 ───┘        └→ 同一交付预设
+```
+
+交叉淡化只作用于相邻对白的真实重叠区域；`sequence` 模式启用交叉淡化时，相邻重叠会替代顺序间隔。自动补空隙必须连接 room tone，渲染器只在没有对白覆盖的时间段循环填充，并在边缘加入短淡化，不会把背景声铺到对白上。
+
+交付预设会执行两遍 FFmpeg EBU R128 规范化并限制 True Peak。`audiobook` 默认 -20 LUFS / -3 dBTP / FLAC，`podcast` 默认 -16 LUFS / -1 dBTP / WAV，`video_dialogue` 默认 -23 LUFS / -1 dBTP / WAV；预设同时覆盖排列方式、交叉淡化和输出采样率，报告中会保存实际参数。
+
 若脚本已在桌面整合包中整理，可点击“导出 ComfyUI 项目 JSON”，再用“FireRedAudio 桌面项目交换”节点一次还原 Voice Bank、Script Plan 和已采用的 Audio Batch。节点会验证参考音频 SHA-256；文件移动或被改写时会明确报错。
 
 角色脚本支持以下形式：
@@ -121,6 +139,19 @@ Load Audio → 音色档案 ├→ 音色库 → 角色脚本/SRT 预检 → 可
 SRT 的正文可用 `[角色] 台词` 标记角色。JSON 可直接传数组，或传包含 `lines` 数组的对象；每项支持 `speaker`、`text`、`language`、`start_seconds`、`end_seconds`。
 
 批量配音输出到 `ComfyUI/output/<subfolder>/<project_name>/`。`manifest.json` 会在每条成功或失败后原子更新；启用恢复后，只有台词、音色参考、生成参数和模型身份指纹均一致且 WAV 仍存在的条目才会命中缓存。由于上游生成接口当前只支持 `batch_size=1`，此节点采用顺序 Worker 请求，以获得可中断、可诊断和可恢复的行为，并不宣称原生张量 batch 加速。
+
+## 真模型长跑验收
+
+可在目标机器运行节点仓库自带的验收脚本；模型保持外置：
+
+```powershell
+python scripts/validate_real_model_long_run.py `
+  --model-root "D:\ComfyUI\models\TTS\FireRedAudio" `
+  --reference-audio "D:\ComfyUI\input\voice_reference.wav" `
+  --rounds 20 --device cuda:0 --memory-mode sequential --acceleration-mode auto_safe
+```
+
+v0.9.0 在 RTX 5090 Laptop 上完成 20/20 轮真实 TTS，所有 WAV 均通过大小、时长和 SHA-256 取证；暖机后任务中位耗时 15.184 秒，CUDA 峰值分配约 19.852 GiB，任务结束显存首五轮/末五轮中位数均为 574 MiB，漂移 0 MiB。该结果只证明这台目标机器和该工作流，不外推成所有显卡的固定速度。
 
 ## 许可证与安全
 

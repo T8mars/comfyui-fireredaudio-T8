@@ -10,7 +10,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-
 MANIFEST_VERSION = 1
 
 
@@ -590,8 +589,14 @@ def render_timeline_to_wav(
     *,
     mode: str = "timeline",
     gap_ms: int = 120,
+    crossfade_ms: int = 0,
     peak_policy: str = "limit",
     sample_rate: int = 24000,
+    gap_fill_path: str | Path | None = None,
+    auto_fill_gaps: bool = False,
+    target_lufs: float | None = None,
+    loudness_range_lu: float = 7.0,
+    true_peak_dbfs: float = -1.0,
 ) -> dict[str, Any]:
     import torch
 
@@ -602,6 +607,10 @@ def render_timeline_to_wav(
         raise ValueError(f"不支持的时间线模式：{mode}")
     if peak_policy not in {"limit", "clip", "none"}:
         raise ValueError(f"不支持的峰值策略：{peak_policy}")
+    if not 0 <= int(crossfade_ms) <= 2000:
+        raise ValueError("交叉淡化必须在 0…2000 ms")
+    if auto_fill_gaps and not gap_fill_path:
+        raise ValueError("启用自动补空隙时必须连接 room tone 音频")
     decoded: list[tuple[dict[str, Any], Any, int]] = []
     channels = 1
     for item in values:
@@ -610,9 +619,10 @@ def render_timeline_to_wav(
         channels = max(channels, int(audio.shape[0]))
         decoded.append((item, audio, source_rate))
     placements: list[dict[str, Any]] = []
-    render_entries: list[tuple[Any, int]] = []
+    render_entries: list[tuple[dict[str, Any], Any, int]] = []
     cursor = 0
     gap_samples = round(max(0, gap_ms) * sample_rate / 1000)
+    requested_crossfade = round(max(0, crossfade_ms) * sample_rate / 1000)
     max_end = 0
     for item, audio, source_rate in decoded:
         if audio.shape[0] == 1 and channels > 1:
@@ -623,6 +633,14 @@ def render_timeline_to_wav(
             offset = 0
         elif mode == "timeline" and item.get("start_seconds") is not None:
             offset = round(max(0.0, float(item["start_seconds"])) * sample_rate)
+        elif mode == "sequence" and render_entries and requested_crossfade:
+            previous_audio = render_entries[-1][1]
+            actual = min(
+                requested_crossfade,
+                max(0, int(previous_audio.shape[-1]) - 1),
+                max(0, int(audio.shape[-1]) - 1),
+            )
+            offset = max(0, cursor - gap_samples - actual)
         else:
             offset = cursor
         end = offset + audio.shape[-1]
@@ -639,12 +657,92 @@ def render_timeline_to_wav(
                 ),
             }
         )
-        render_entries.append((audio, offset))
+        render_entries.append((item, audio, offset))
         cursor = end + gap_samples
         max_end = max(max_end, end)
+    crossfades: list[dict[str, Any]] = []
+    if mode != "overlay" and requested_crossfade:
+        for index in range(1, len(render_entries)):
+            previous_item, previous_audio, previous_offset = render_entries[index - 1]
+            current_item, current_audio, current_offset = render_entries[index]
+            previous_end = previous_offset + int(previous_audio.shape[-1])
+            overlap = max(0, previous_end - current_offset)
+            actual = min(
+                requested_crossfade,
+                overlap,
+                int(previous_audio.shape[-1]),
+                int(current_audio.shape[-1]),
+            )
+            if actual <= 0:
+                continue
+            import torch
+
+            phase = torch.linspace(0.0, math.pi / 2.0, actual, dtype=torch.float32)
+            current_fade_end = min(
+                int(current_audio.shape[-1]),
+                max(actual, previous_end - current_offset),
+            )
+            current_fade_start = current_fade_end - actual
+            previous_audio[:, -actual:] *= torch.cos(phase)
+            current_audio[:, current_fade_start:current_fade_end] *= torch.sin(phase)
+            crossfades.append(
+                {
+                    "from_line_id": previous_item.get("line_id"),
+                    "to_line_id": current_item.get("line_id"),
+                    "duration_seconds": actual / sample_rate,
+                }
+            )
     mixed = torch.zeros((channels, max_end), dtype=torch.float32)
-    for audio, offset in render_entries:
+    for _item, audio, offset in render_entries:
         mixed[:, offset : offset + audio.shape[-1]] += audio
+    filled_gaps: list[dict[str, float]] = []
+    if auto_fill_gaps and gap_fill_path:
+        filler, filler_rate = _read_wav_tensor(gap_fill_path)
+        filler = _resample_linear(filler, filler_rate, sample_rate)
+        if filler.shape[-1] == 0:
+            raise ValueError("room tone 音频为空")
+        if filler.shape[0] == 1 and channels > 1:
+            filler = filler.repeat(channels, 1)
+        elif filler.shape[0] != channels:
+            raise ValueError("room tone 与时间线声道数不兼容")
+        repetitions = max(1, math.ceil(max_end / int(filler.shape[-1])))
+        filler = filler.repeat(1, repetitions)[:, :max_end]
+        envelope = torch.zeros(max_end, dtype=torch.float32)
+        intervals = sorted(
+            (offset, offset + int(audio.shape[-1]))
+            for _item, audio, offset in render_entries
+        )
+        merged: list[list[int]] = []
+        for start, end in intervals:
+            if not merged or start > merged[-1][1]:
+                merged.append([start, end])
+            else:
+                merged[-1][1] = max(merged[-1][1], end)
+        gaps: list[tuple[int, int]] = []
+        gap_start = 0
+        for start, end in merged:
+            if start > gap_start:
+                gaps.append((gap_start, start))
+            gap_start = max(gap_start, end)
+        if gap_start < max_end:
+            gaps.append((gap_start, max_end))
+        edge = max(1, round(0.02 * sample_rate))
+        for start, end in gaps:
+            if end <= start:
+                continue
+            envelope[start:end] = 1.0
+            fade = min(edge, (end - start) // 2)
+            if fade:
+                envelope[start : start + fade] *= torch.linspace(0.0, 1.0, fade)
+                envelope[end - fade : end] *= torch.linspace(1.0, 0.0, fade)
+            filled_gaps.append(
+                {
+                    "start_seconds": start / sample_rate,
+                    "end_seconds": end / sample_rate,
+                    "duration_seconds": (end - start) / sample_rate,
+                }
+            )
+        mixed += filler * envelope.unsqueeze(0)
     peak_before = float(mixed.abs().max().item()) if mixed.numel() else 0.0
     gain = 1.0
     if peak_policy == "limit" and peak_before > 0.98:
@@ -656,11 +754,29 @@ def render_timeline_to_wav(
     pcm = (mixed.clamp(-1.0, 1.0) * 32767.0).round().to(torch.int16).transpose(0, 1).contiguous()
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(target), "wb") as writer:
+    raw_target = target if target_lufs is None else target.with_name(
+        f".{target.stem}-{stable_digest(str(target))[:8]}.raw.wav"
+    )
+    with wave.open(str(raw_target), "wb") as writer:
         writer.setnchannels(channels)
         writer.setsampwidth(2)
         writer.setframerate(sample_rate)
         writer.writeframes(pcm.numpy().tobytes())
+    mastering = None
+    if target_lufs is not None:
+        from .postproduction import master_wav
+
+        try:
+            mastering = master_wav(
+                raw_target,
+                target,
+                target_lufs=float(target_lufs),
+                loudness_range_lu=float(loudness_range_lu),
+                true_peak_dbfs=float(true_peak_dbfs),
+                sample_rate=sample_rate,
+            )
+        finally:
+            raw_target.unlink(missing_ok=True)
     return {
         "mode": mode,
         "output_path": str(target),
@@ -671,6 +787,11 @@ def render_timeline_to_wav(
         "applied_gain": gain,
         "clipped_samples_before_write": clipped_samples,
         "placements": placements,
+        "crossfade_ms": int(crossfade_ms),
+        "crossfades": crossfades,
+        "auto_fill_gaps": bool(auto_fill_gaps),
+        "filled_gaps": filled_gaps,
+        "mastering": mastering,
     }
 
 

@@ -126,6 +126,8 @@
       ],
       "mode": "timeline",
       "gap_ms": 120,
+      "crossfade_ms": 0,
+      "auto_fill_gaps": false,
       "peak_policy": "limit",
       "sample_rate": 24000
     }

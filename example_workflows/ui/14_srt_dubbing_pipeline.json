@@ -1,6 +1,6 @@
 {
-  "last_node_id": 9,
-  "last_link_id": 9,
+  "last_node_id": 11,
+  "last_link_id": 12,
   "nodes": [
     {
       "id": 1,
@@ -335,6 +335,79 @@
       ]
     },
     {
+      "id": 10,
+      "type": "LoadAudio",
+      "pos": [
+        1740,
+        760
+      ],
+      "size": [
+        300,
+        170
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            10
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        "room_tone.wav",
+        null,
+        null
+      ]
+    },
+    {
+      "id": 11,
+      "type": "T8_FireRedAudio_DeliveryPreset",
+      "pos": [
+        2220,
+        760
+      ],
+      "size": [
+        390,
+        190
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "delivery_preset",
+          "type": "T8_FIREREDAUDIO_DELIVERY_PRESET",
+          "links": [
+            11,
+            12
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "preset_report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_DeliveryPreset"
+      },
+      "widgets_values": [
+        "video_dialogue"
+      ]
+    },
+    {
       "id": 8,
       "type": "T8_FireRedAudio_TimelineRender",
       "pos": [
@@ -342,8 +415,8 @@
         330
       ],
       "size": [
-        390,
-        280
+        430,
+        380
       ],
       "flags": {},
       "order": 7,
@@ -353,6 +426,16 @@
           "name": "audio_batch",
           "type": "T8_FIREREDAUDIO_AUDIO_BATCH",
           "link": 8
+        },
+        {
+          "name": "room_tone_audio",
+          "type": "AUDIO",
+          "link": 10
+        },
+        {
+          "name": "delivery_preset",
+          "type": "T8_FIREREDAUDIO_DELIVERY_PRESET",
+          "link": 11
         }
       ],
       "outputs": [
@@ -377,6 +460,8 @@
       "widgets_values": [
         "timeline",
         120,
+        0,
+        true,
         "limit",
         24000
       ]
@@ -385,12 +470,12 @@
       "id": 9,
       "type": "T8_FireRedAudio_SaveAudio",
       "pos": [
-        2670,
+        2710,
         350
       ],
       "size": [
-        360,
-        220
+        380,
+        240
       ],
       "flags": {},
       "order": 8,
@@ -400,6 +485,11 @@
           "name": "audio",
           "type": "AUDIO",
           "link": 9
+        },
+        {
+          "name": "delivery_preset",
+          "type": "T8_FIREREDAUDIO_DELIVERY_PRESET",
+          "link": 12
         }
       ],
       "outputs": [
@@ -492,6 +582,30 @@
       9,
       0,
       "AUDIO"
+    ],
+    [
+      10,
+      10,
+      0,
+      8,
+      1,
+      "AUDIO"
+    ],
+    [
+      11,
+      11,
+      0,
+      8,
+      2,
+      "T8_FIREREDAUDIO_DELIVERY_PRESET"
+    ],
+    [
+      12,
+      11,
+      0,
+      9,
+      1,
+      "T8_FIREREDAUDIO_DELIVERY_PRESET"
     ]
   ],
   "groups": [],
