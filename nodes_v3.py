@@ -24,12 +24,20 @@ from .runtime.audio_adapter import (
     _safe_output_dir,
     audio_to_wav,
     export_audio_path,
+    output_root,
     output_wav_path,
     save_audio_file,
     save_text_file,
     saved_audio_files_ui,
     saved_audio_ui,
     wav_to_audio,
+)
+from .runtime.creator_tools import (
+    build_line_review,
+    fit_audio_batch_to_cues,
+    load_audio_batch_from_manifest,
+    normalize_script_plan,
+    parse_json_mapping,
 )
 from .runtime.evidence import (
     extract_evidence_ranges,
@@ -98,7 +106,7 @@ AudioBatchType = io.Custom("T8_FIREREDAUDIO_AUDIO_BATCH")
 SpeechQAType = io.Custom("T8_FIREREDAUDIO_SPEECH_QA")
 DeliveryPresetType = io.Custom("T8_FIREREDAUDIO_DELIVERY_PRESET")
 LocalRepairPlanType = io.Custom("T8_FIREREDAUDIO_LOCAL_REPAIR_PLAN")
-NODE_VERSION = "0.13.0"
+NODE_VERSION = "0.14.0"
 
 LONG_LOCATE_PROMPTS = {
     "timeline_summary": (
@@ -1419,7 +1427,7 @@ class T8FireRedAudioReferenceCandidates(io.ComfyNode):
             raise ValueError("启用 ASR 可懂度代理时必须连接 FireRedAudio 运行时")
         source = audio_to_wav(source_audio, "reference-candidates-source")
         project = _safe_name(project_name, "reference-search")
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
         clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/reference-candidates"
         output_dir = _safe_output_dir(f"{clean_subfolder}/{project}-{stamp}")
         items, report = discover_reference_candidates(
@@ -1579,6 +1587,91 @@ class T8FireRedAudioProjectExchange(io.ComfyNode):
         return io.NodeOutput(bank, plan, batch, _json(report))
 
 
+class T8FireRedAudioAudioBatchResume(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_AudioBatchResume",
+            display_name="FireRedAudio 恢复批次/审核会话 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "从既有批量、返修、时长适配或审核 Manifest 恢复 AudioBatch。"
+                "默认只读取 ComfyUI output，缺失文件会显式标记。"
+            ),
+            inputs=[
+                io.String.Input("manifest_path", display_name="Manifest 路径", default=""),
+                io.Combo.Input(
+                    "missing_policy",
+                    display_name="缺失文件处理",
+                    options=["mark_missing", "error"],
+                    default="mark_missing",
+                ),
+                io.Boolean.Input("verify_hashes", display_name="校验已记录 SHA-256", default=False),
+                io.Boolean.Input(
+                    "allow_external_manifest",
+                    display_name="允许读取 output 外部 Manifest",
+                    default=False,
+                    advanced=True,
+                ),
+            ],
+            outputs=[
+                AudioBatchType.Output("audio_batch", display_name="已恢复 AudioBatch"),
+                io.String.Output("resolved_manifest_path", display_name="Manifest 绝对路径"),
+                io.String.Output("resume_report", display_name="恢复报告"),
+            ],
+        )
+
+    @classmethod
+    def validate_inputs(cls, manifest_path: str, **kwargs) -> bool | str:
+        return True if str(manifest_path).strip() else "Manifest 路径不能为空。"
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        manifest_path: str,
+        missing_policy: str,
+        verify_hashes: bool,
+        allow_external_manifest: bool,
+        **kwargs,
+    ) -> str:
+        raw = Path(str(manifest_path).strip())
+        target = raw if raw.is_absolute() else output_root() / raw
+        target = target.resolve()
+        state: dict[str, Any] = {"exists": target.is_file()}
+        if target.is_file():
+            stat = target.stat()
+            state.update(size=stat.st_size, mtime_ns=stat.st_mtime_ns)
+        return stable_digest(
+            {
+                "path": str(target),
+                "state": state,
+                "missing_policy": missing_policy,
+                "verify_hashes": bool(verify_hashes),
+                "allow_external_manifest": bool(allow_external_manifest),
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        manifest_path: str,
+        missing_policy: str,
+        verify_hashes: bool,
+        allow_external_manifest: bool,
+    ) -> io.NodeOutput:
+        raw = Path(str(manifest_path).strip())
+        target = raw if raw.is_absolute() else output_root() / raw
+        target = target.resolve()
+        batch, report = load_audio_batch_from_manifest(
+            target,
+            allowed_root=None if allow_external_manifest else output_root(),
+            missing_policy=missing_policy,
+            verify_hashes=verify_hashes,
+        )
+        return io.NodeOutput(batch, str(target), _json(report))
+
+
 class T8FireRedAudioVoiceProfile(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -1711,6 +1804,103 @@ class T8FireRedAudioScriptParser(io.ComfyNode):
         if strict_validation and not plan.valid:
             raise ValueError("脚本预检失败：" + _json(report))
         return io.NodeOutput(plan, _json(plan.to_dict()), _json(report))
+
+
+class T8FireRedAudioTextNormalizer(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_TextNormalizer",
+            display_name="FireRedAudio 朗读文本规范化 · T8star-Aix",
+            category=CATEGORY,
+            description=(
+                "在不丢失原文的前提下生成实际送入 TTS 的朗读文本；支持自定义词典、"
+                "Unicode/空白清理、中文日期与可选数字展开。"
+            ),
+            inputs=[
+                ScriptPlanType.Input("script_plan", display_name="原脚本计划"),
+                io.String.Input(
+                    "replacement_dictionary_json",
+                    display_name='替换词典 JSON，例如 {"API":"A P I"}',
+                    default="{}",
+                    multiline=True,
+                ),
+                io.Boolean.Input("normalize_unicode", display_name="统一全角/兼容字符", default=True),
+                io.Boolean.Input("normalize_whitespace", display_name="清理空白与标点前空格", default=True),
+                io.Boolean.Input("expand_zh_dates", display_name="展开中文日期", default=True),
+                io.Boolean.Input(
+                    "expand_zh_numbers",
+                    display_name="展开中文数字（可能改变专有编号读法）",
+                    default=False,
+                    advanced=True,
+                ),
+            ],
+            outputs=[
+                ScriptPlanType.Output("script_plan", display_name="规范化脚本计划"),
+                io.String.Output("normalized_json", display_name="原文/朗读文本对照 JSON"),
+                io.String.Output("changed_line_ids", display_name="发生变化的 line ID"),
+                io.String.Output("normalization_report", display_name="规范化报告"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        script_plan: ScriptPlan,
+        replacement_dictionary_json: str,
+        normalize_unicode: bool,
+        normalize_whitespace: bool,
+        expand_zh_dates: bool,
+        expand_zh_numbers: bool,
+        **kwargs,
+    ) -> str:
+        return stable_digest(
+            {
+                "script_plan": script_plan.to_dict() if isinstance(script_plan, ScriptPlan) else None,
+                "replacement_dictionary_json": replacement_dictionary_json,
+                "normalize_unicode": bool(normalize_unicode),
+                "normalize_whitespace": bool(normalize_whitespace),
+                "expand_zh_dates": bool(expand_zh_dates),
+                "expand_zh_numbers": bool(expand_zh_numbers),
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        script_plan: ScriptPlan,
+        replacement_dictionary_json: str,
+        normalize_unicode: bool,
+        normalize_whitespace: bool,
+        expand_zh_dates: bool,
+        expand_zh_numbers: bool,
+    ) -> io.NodeOutput:
+        dictionary = parse_json_mapping(replacement_dictionary_json, "替换词典")
+        plan, report = normalize_script_plan(
+            script_plan,
+            replacements=dictionary,
+            normalize_unicode=normalize_unicode,
+            normalize_whitespace=normalize_whitespace,
+            expand_zh_dates=expand_zh_dates,
+            expand_zh_numbers=expand_zh_numbers,
+        )
+        changed_ids = [str(item["line_id"]) for item in report["items"]]
+        comparison = {
+            "source_format": plan.source_format,
+            "valid": plan.valid,
+            "lines": [
+                {
+                    "line_id": line.line_id,
+                    "index": line.index,
+                    "speaker": line.speaker,
+                    "source_text": line.source_text or line.text,
+                    "spoken_text": line.text,
+                    "normalization": list(line.normalization),
+                }
+                for line in plan.lines
+            ],
+        }
+        return io.NodeOutput(plan, _json(comparison), "\n".join(changed_ids), _json(report))
 
 
 class T8FireRedAudioBatchDubbing(io.ComfyNode):
@@ -2295,6 +2485,283 @@ class T8FireRedAudioSpeechQA(io.ComfyNode):
         return io.NodeOutput(qa, _json(qa), "\n".join(failed_ids))
 
 
+class T8FireRedAudioDurationFit(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_DurationFit",
+            display_name="FireRedAudio 字幕时长适配 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "按 SRT 时间槽报告超时；可在安全倍率内用 FFmpeg atempo 保持音高地适配，"
+                "超过上限的条目进入重做清单。始终保留源文件。"
+            ),
+            inputs=[
+                AudioBatchType.Input("audio_batch", display_name="批量音频"),
+                io.Combo.Input(
+                    "strategy",
+                    display_name="处理策略",
+                    options=["safe_stretch", "report_only"],
+                    default="safe_stretch",
+                ),
+                io.Float.Input(
+                    "tolerance_seconds",
+                    display_name="允许时间差（秒）",
+                    default=0.10,
+                    min=0.0,
+                    max=5.0,
+                    step=0.05,
+                ),
+                io.Float.Input(
+                    "maximum_speed",
+                    display_name="最大安全加速倍率",
+                    default=1.15,
+                    min=1.0,
+                    max=2.0,
+                    step=0.01,
+                ),
+                io.Boolean.Input("fit_underrun", display_name="同时拉伸明显过短台词", default=False),
+                io.Float.Input(
+                    "minimum_speed",
+                    display_name="最小安全减速倍率",
+                    default=0.90,
+                    min=0.5,
+                    max=1.0,
+                    step=0.01,
+                    advanced=True,
+                ),
+                io.String.Input("project_name", display_name="适配项目名", default="subtitle-fit"),
+                io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/duration-fit"),
+            ],
+            outputs=[
+                AudioBatchType.Output("audio_batch", display_name="适配后 AudioBatch"),
+                io.String.Output("manifest_path", display_name="适配 Manifest 路径"),
+                io.String.Output("retry_line_ids", display_name="建议重新生成的 line ID"),
+                io.String.Output("fit_report", display_name="时长适配报告"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        audio_batch: AudioBatch,
+        strategy: str,
+        tolerance_seconds: float,
+        maximum_speed: float,
+        fit_underrun: bool,
+        minimum_speed: float,
+        project_name: str,
+        subfolder: str,
+        **kwargs,
+    ) -> str:
+        return stable_digest(
+            {
+                "audio_batch": _audio_batch_state(audio_batch),
+                "strategy": strategy,
+                "tolerance_seconds": float(tolerance_seconds),
+                "maximum_speed": float(maximum_speed),
+                "fit_underrun": bool(fit_underrun),
+                "minimum_speed": float(minimum_speed),
+                "project_name": project_name,
+                "subfolder": subfolder,
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        audio_batch: AudioBatch,
+        strategy: str,
+        tolerance_seconds: float,
+        maximum_speed: float,
+        fit_underrun: bool,
+        minimum_speed: float,
+        project_name: str,
+        subfolder: str,
+    ) -> io.NodeOutput:
+        project = _safe_name(project_name, "subtitle-fit")
+        stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/duration-fit"
+        output_dir = _safe_output_dir(f"{clean_subfolder}/{project}-{stamp}")
+        batch, report = fit_audio_batch_to_cues(
+            audio_batch,
+            output_dir,
+            strategy=strategy,
+            tolerance_seconds=tolerance_seconds,
+            maximum_speed=maximum_speed,
+            minimum_speed=minimum_speed,
+            fit_underrun=fit_underrun,
+        )
+        manifest_path = output_dir / "duration-fit-manifest.json"
+        payload = {
+            "manifest_version": MANIFEST_VERSION,
+            "kind": "duration_fit",
+            "node_version": NODE_VERSION,
+            **report,
+            "items": list(batch.items),
+        }
+        write_manifest(manifest_path, payload)
+        fitted = AudioBatch(str(manifest_path), batch.items)
+        return io.NodeOutput(
+            fitted,
+            str(manifest_path),
+            "\n".join(report["retry_line_ids"]),
+            _json(report),
+        )
+
+
+class T8FireRedAudioLineReview(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_LineReview",
+            display_name="FireRedAudio 逐句制作审核台 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "逐行试听并合并自动 QA 与人工决定；输出通过批次、人工复核清单和定向重做清单。"
+                "前端表格会把决定、评分和备注同步到可序列化 JSON 输入。"
+            ),
+            inputs=[
+                AudioBatchType.Input("audio_batch", display_name="待审核 AudioBatch"),
+                SpeechQAType.Input("qa", display_name="可选语音 QA", optional=True),
+                io.String.Input(
+                    "decisions_json",
+                    display_name='决定 JSON：auto/approve/review/retry',
+                    default="{}",
+                    multiline=True,
+                    advanced=True,
+                ),
+                io.String.Input(
+                    "ratings_json",
+                    display_name="评分 JSON（1–5）",
+                    default="{}",
+                    multiline=True,
+                    advanced=True,
+                ),
+                io.String.Input(
+                    "notes_json",
+                    display_name="备注 JSON",
+                    default="{}",
+                    multiline=True,
+                    advanced=True,
+                ),
+                io.String.Input("review_name", display_name="审核项目名", default="production-review"),
+                io.String.Input("subfolder", display_name="审核记录目录", default="fireredaudio/line-reviews"),
+                io.Int.Input("preview_limit", display_name="表格最多加载行数", default=40, min=1, max=200),
+            ],
+            outputs=[
+                AudioBatchType.Output("reviewed_batch", display_name="带审核记录 AudioBatch"),
+                AudioBatchType.Output("approved_batch", display_name="仅通过项 AudioBatch"),
+                io.String.Output("retry_line_ids", display_name="建议重做 line ID"),
+                io.String.Output("review_line_ids", display_name="待人工复核 line ID"),
+                io.String.Output("review_manifest_path", display_name="审核 Manifest 路径"),
+                io.String.Output("review_report", display_name="审核报告"),
+            ],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        audio_batch: AudioBatch,
+        decisions_json: str,
+        ratings_json: str,
+        notes_json: str,
+        review_name: str,
+        subfolder: str,
+        preview_limit: int,
+        qa: dict[str, Any] | None = None,
+        **kwargs,
+    ) -> str:
+        return stable_digest(
+            {
+                "audio_batch": _audio_batch_state(audio_batch),
+                "qa": qa,
+                "decisions_json": decisions_json,
+                "ratings_json": ratings_json,
+                "notes_json": notes_json,
+                "review_name": review_name,
+                "subfolder": subfolder,
+                "preview_limit": int(preview_limit),
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        audio_batch: AudioBatch,
+        decisions_json: str,
+        ratings_json: str,
+        notes_json: str,
+        review_name: str,
+        subfolder: str,
+        preview_limit: int,
+        qa: dict[str, Any] | None = None,
+    ) -> io.NodeOutput:
+        decisions = parse_json_mapping(decisions_json, "决定 JSON")
+        ratings = parse_json_mapping(ratings_json, "评分 JSON")
+        notes = parse_json_mapping(notes_json, "备注 JSON")
+        reviewed, approved, report = build_line_review(
+            audio_batch,
+            qa=qa,
+            decisions=decisions,
+            ratings=ratings,
+            notes=notes,
+        )
+        project = _safe_name(review_name, "production-review")
+        stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/line-reviews"
+        review_dir = _safe_output_dir(f"{clean_subfolder}/{project}-{stamp}")
+        manifest_path = review_dir / "review-manifest.json"
+        manifest_payload = {
+            "manifest_version": MANIFEST_VERSION,
+            "kind": "line_production_review",
+            "node_version": NODE_VERSION,
+            "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            **{key: value for key, value in report.items() if key != "rows"},
+            "items": list(reviewed.items),
+        }
+        write_manifest(manifest_path, manifest_payload)
+        reviewed_batch = AudioBatch(str(manifest_path), reviewed.items)
+        approved_batch = AudioBatch(str(manifest_path), approved.items)
+        limit = max(1, min(200, int(preview_limit)))
+        ui_rows: list[dict[str, Any]] = []
+        audio_descriptors: list[dict[str, str]] = []
+        for row in report["rows"][:limit]:
+            copy = dict(row)
+            path = Path(str(copy.get("output_path") or ""))
+            descriptor = None
+            if path.is_file():
+                try:
+                    descriptor = saved_audio_ui(path)["audio"][0]
+                    audio_descriptors.append(descriptor)
+                except ValueError:
+                    descriptor = None
+            copy["audio"] = descriptor
+            ui_rows.append(copy)
+        ui_payload = {
+            "manifest_path": str(manifest_path),
+            "source_manifest_path": audio_batch.manifest_path,
+            "total": report["total"],
+            "previewed": len(ui_rows),
+            "rows": ui_rows,
+        }
+        ui: dict[str, Any] = {"fireredaudio_review": [ui_payload]}
+        if audio_descriptors:
+            ui["audio"] = audio_descriptors
+        return io.NodeOutput(
+            reviewed_batch,
+            approved_batch,
+            "\n".join(report["retry_line_ids"]),
+            "\n".join(report["review_line_ids"]),
+            str(manifest_path),
+            _json({key: value for key, value in report.items() if key != "rows"}),
+            ui=ui,
+        )
+
+
 class T8FireRedAudioBatchRetry(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -2319,6 +2786,21 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
                 io.Int.Input("max_attempts", display_name="最多尝试次数", default=2, min=1, max=5),
                 io.Int.Input("batch_size", display_name="每批条数", default=8, min=1, max=32),
                 SettingsType.Input("settings", display_name="生成参数", optional=True),
+                io.Boolean.Input(
+                    "enforce_cue_duration",
+                    display_name="返修后仍须满足字幕时间槽",
+                    default=True,
+                    advanced=True,
+                ),
+                io.Float.Input(
+                    "max_cue_overrun_seconds",
+                    display_name="返修允许超出时间槽（秒）",
+                    default=0.50,
+                    min=0.0,
+                    max=60.0,
+                    step=0.1,
+                    advanced=True,
+                ),
             ],
             outputs=[
                 AudioBatchType.Output("audio_batch", display_name="返修后批量音频"),
@@ -2342,6 +2824,8 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
         max_attempts: int,
         batch_size: int,
         settings: GenerationSettings | None = None,
+        enforce_cue_duration: bool = True,
+        max_cue_overrun_seconds: float = 0.50,
         **kwargs,
     ) -> str:
         return stable_digest(
@@ -2358,6 +2842,8 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
                 "max_attempts": int(max_attempts),
                 "batch_size": int(batch_size),
                 "settings": _settings(settings).to_dict(),
+                "enforce_cue_duration": bool(enforce_cue_duration),
+                "max_cue_overrun_seconds": float(max_cue_overrun_seconds),
             }
         )
 
@@ -2376,6 +2862,8 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
         max_attempts: int,
         batch_size: int,
         settings: GenerationSettings | None = None,
+        enforce_cue_duration: bool = True,
+        max_cue_overrun_seconds: float = 0.50,
     ) -> io.NodeOutput:
         if not isinstance(audio_batch, AudioBatch):
             raise TypeError("定向返修必须连接原 AudioBatch")
@@ -2415,6 +2903,7 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
         base_config = base_settings.to_dict()
         effective_batch_size = max(1, min(32, int(batch_size)))
         effective_attempts = max(1, min(5, int(max_attempts)))
+        cue_threshold = max(0.0, float(max_cue_overrun_seconds))
         replacements: dict[str, dict[str, Any]] = {}
         for line_id in target_ids:
             item = dict(original_by_id[line_id])
@@ -2440,12 +2929,15 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
             "seed_strategy": seed_strategy,
             "seed_step": int(seed_step),
             "max_attempts": effective_attempts,
+            "enforce_cue_duration": bool(enforce_cue_duration),
+            "max_cue_overrun_seconds": cue_threshold,
             "items": merged_items(),
         }
         write_manifest(manifest_path, manifest_payload)
         remaining = list(target_ids)
         performance: list[dict[str, Any]] = []
         total_calls = 0
+        cue_rejected: set[str] = set()
         try:
             for attempt in range(1, effective_attempts + 1):
                 if not remaining:
@@ -2522,8 +3014,34 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
                                 raise RuntimeError("Worker 未产生返修音频")
                             if actual.resolve() != job["target"]:
                                 shutil.copy2(actual, job["target"])
+                            line = line_by_id[line_id]
+                            if (
+                                line.start_seconds is not None
+                                and line.end_seconds is not None
+                            ):
+                                cue_seconds = float(line.end_seconds) - float(
+                                    line.start_seconds
+                                )
+                                duration_seconds = float(
+                                    wav_metrics(job["target"])["duration_seconds"]
+                                )
+                                cue_overrun = max(0.0, duration_seconds - cue_seconds)
+                                attempt_record.update(
+                                    duration_seconds=duration_seconds,
+                                    cue_seconds=cue_seconds,
+                                    cue_overrun_seconds=cue_overrun,
+                                )
+                                if enforce_cue_duration and cue_overrun > cue_threshold:
+                                    cue_rejected.add(line_id)
+                                    raise RuntimeError(
+                                        "返修音频仍超出字幕时间槽："
+                                        f"{cue_overrun:.3f}s > {cue_threshold:.3f}s"
+                                    )
                             attempt_record.update(status="complete", worker_report=worker_report)
                             item["repair_attempts"].append(attempt_record)
+                            if isinstance(item.get("human_review"), dict):
+                                item["previous_human_review"] = dict(item["human_review"])
+                                item.pop("human_review", None)
                             item.update(
                                 status="complete",
                                 output_path=str(job["target"]),
@@ -2566,6 +3084,9 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
             "seed_step": int(seed_step),
             "max_attempts": effective_attempts,
             "batch_size": effective_batch_size,
+            "enforce_cue_duration": bool(enforce_cue_duration),
+            "max_cue_overrun_seconds": cue_threshold,
+            "cue_rejected_line_ids": sorted(cue_rejected),
             "worker_batch_calls": total_calls,
             "performance": performance,
             "source_files_overwritten": False,
@@ -3837,13 +4358,17 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioReferenceQuality,
             T8FireRedAudioPrepareReference,
             T8FireRedAudioProjectExchange,
+            T8FireRedAudioAudioBatchResume,
             T8FireRedAudioVoiceProfile,
             T8FireRedAudioVoiceBank,
             T8FireRedAudioScriptParser,
+            T8FireRedAudioTextNormalizer,
             T8FireRedAudioBatchDubbing,
             T8FireRedAudioSynchronizedAB,
             T8FireRedAudioTimelineRender,
             T8FireRedAudioSpeechQA,
+            T8FireRedAudioDurationFit,
+            T8FireRedAudioLineReview,
             T8FireRedAudioBatchRetry,
             T8FireRedAudioAudioBatchSelect,
             T8FireRedAudioTakeReviewBoard,

@@ -19,7 +19,7 @@
   "2": {
     "class_type": "LoadAudio",
     "inputs": {
-      "audio": "narrator_reference.wav"
+      "audio": "voice_reference.wav"
     }
   },
   "3": {
@@ -30,57 +30,48 @@
         0
       ],
       "name": "旁白",
-      "prompt_text": "这是旁白的参考音频逐字稿。",
+      "prompt_text": "这是参考音频逐字稿。",
       "language": "zh",
-      "tags": "旁白,稳定"
+      "tags": "旁白,制作审核"
     }
   },
   "4": {
-    "class_type": "LoadAudio",
-    "inputs": {
-      "audio": "actor_reference.wav"
-    }
-  },
-  "5": {
-    "class_type": "T8_FireRedAudio_VoiceProfile",
-    "inputs": {
-      "audio": [
-        "4",
-        0
-      ],
-      "name": "小夏",
-      "prompt_text": "这是小夏的参考音频逐字稿。",
-      "language": "zh",
-      "tags": "青年,自然"
-    }
-  },
-  "6": {
     "class_type": "T8_FireRedAudio_VoiceBank",
     "inputs": {
       "profiles.profile_0": [
         "3",
         0
-      ],
-      "profiles.profile_1": [
-        "5",
-        0
       ]
     }
   },
-  "7": {
+  "5": {
     "class_type": "T8_FireRedAudio_ScriptParser",
     "inputs": {
       "voice_bank": [
-        "6",
+        "4",
         0
       ],
-      "script": "旁白：欢迎进入批量创作闭环。\n小夏：未通过质检的台词会单独返修。\n旁白：通过的文件不会重新生成。",
-      "source_format": "role_script",
+      "script": "1\n00:00:00,000 --> 00:00:02,500\n[旁白] ＡＰＩ 于 2026-08-28 发布。\n\n2\n00:00:02,500 --> 00:00:05,000\n[旁白] 第二句进入逐句审核与返修闭环。",
+      "source_format": "srt",
       "default_speaker": "旁白",
       "strict_validation": true
     }
   },
-  "8": {
+  "6": {
+    "class_type": "T8_FireRedAudio_TextNormalizer",
+    "inputs": {
+      "script_plan": [
+        "5",
+        0
+      ],
+      "replacement_dictionary_json": "{\"API\":\"A P I\"}",
+      "normalize_unicode": true,
+      "normalize_whitespace": true,
+      "expand_zh_dates": true,
+      "expand_zh_numbers": false
+    }
+  },
+  "7": {
     "class_type": "T8_FireRedAudio_GenerationSettings",
     "inputs": {
       "quality_preset": "balanced",
@@ -92,7 +83,7 @@
       "inference_cfg": 2.0
     }
   },
-  "9": {
+  "8": {
     "class_type": "T8_FireRedAudio_BatchDubbing",
     "inputs": {
       "model": [
@@ -100,22 +91,38 @@
         0
       ],
       "script_plan": [
-        "7",
-        0
-      ],
-      "voice_bank": [
         "6",
         0
       ],
-      "project_name": "creator-loop",
+      "voice_bank": [
+        "4",
+        0
+      ],
+      "project_name": "v014-review-demo",
       "subfolder": "fireredaudio/projects",
       "resume": true,
       "continue_on_error": true,
       "batch_size": 8,
       "settings": [
-        "8",
+        "7",
         0
       ]
+    }
+  },
+  "9": {
+    "class_type": "T8_FireRedAudio_DurationFit",
+    "inputs": {
+      "audio_batch": [
+        "8",
+        0
+      ],
+      "strategy": "safe_stretch",
+      "tolerance_seconds": 0.1,
+      "maximum_speed": 1.15,
+      "fit_underrun": false,
+      "minimum_speed": 0.9,
+      "project_name": "v014-review-fit",
+      "subfolder": "fireredaudio/duration-fit"
     }
   },
   "10": {
@@ -137,6 +144,25 @@
     }
   },
   "11": {
+    "class_type": "T8_FireRedAudio_LineReview",
+    "inputs": {
+      "audio_batch": [
+        "9",
+        0
+      ],
+      "qa": [
+        "10",
+        0
+      ],
+      "decisions_json": "{}",
+      "ratings_json": "{}",
+      "notes_json": "{}",
+      "review_name": "v014-first-review",
+      "subfolder": "fireredaudio/line-reviews",
+      "preview_limit": 40
+    }
+  },
+  "12": {
     "class_type": "T8_FireRedAudio_BatchRetry",
     "inputs": {
       "model": [
@@ -144,88 +170,85 @@
         0
       ],
       "audio_batch": [
-        "9",
+        "11",
         0
       ],
       "script_plan": [
-        "7",
-        0
-      ],
-      "voice_bank": [
         "6",
         0
       ],
+      "voice_bank": [
+        "4",
+        0
+      ],
       "failed_line_ids": [
-        "10",
+        "11",
         2
       ],
-      "project_name": "creator-loop-repair",
+      "project_name": "v014-review-repair",
       "subfolder": "fireredaudio/repairs",
       "seed_strategy": "increment",
-      "seed_step": 1,
+      "seed_step": 7,
       "max_attempts": 2,
       "batch_size": 8,
       "settings": [
-        "8",
+        "7",
         0
       ],
       "enforce_cue_duration": true,
       "max_cue_overrun_seconds": 0.5
     }
   },
-  "12": {
-    "class_type": "T8_FireRedAudio_AudioBatchSelect",
-    "inputs": {
-      "audio_batch": [
-        "11",
-        0
-      ],
-      "selection_mode": "position",
-      "position": 1,
-      "line_id": "",
-      "speaker": ""
-    }
-  },
   "13": {
-    "class_type": "T8_FireRedAudio_SaveAudioBatch",
+    "class_type": "T8_FireRedAudio_SpeechQA",
     "inputs": {
-      "audio_batch": [
-        "11",
+      "model": [
+        "1",
         0
       ],
-      "audio_format": "wav",
-      "project_name": "creator-loop-delivery",
-      "subfolder": "fireredaudio/exports",
-      "create_zip": true,
-      "continue_on_error": true,
-      "preview_limit": 16
+      "audio_batch": [
+        "12",
+        0
+      ],
+      "max_text_error_rate": 0.2,
+      "max_clipping_ratio": 0.001,
+      "max_silence_ratio": 0.8,
+      "max_cue_overrun_seconds": 0.5,
+      "max_new_tokens": 512
     }
   },
   "14": {
-    "class_type": "T8_FireRedAudio_TimelineRender",
+    "class_type": "T8_FireRedAudio_LineReview",
     "inputs": {
       "audio_batch": [
-        "11",
+        "12",
         0
       ],
-      "mode": "sequence",
-      "gap_ms": 120,
-      "crossfade_ms": 40,
-      "auto_fill_gaps": false,
-      "peak_policy": "limit",
-      "sample_rate": 24000
+      "qa": [
+        "13",
+        0
+      ],
+      "decisions_json": "{}",
+      "ratings_json": "{}",
+      "notes_json": "{}",
+      "review_name": "v014-final-review",
+      "subfolder": "fireredaudio/line-reviews",
+      "preview_limit": 40
     }
   },
   "15": {
-    "class_type": "T8_FireRedAudio_SaveAudio",
+    "class_type": "T8_FireRedAudio_SaveAudioBatch",
     "inputs": {
-      "audio": [
+      "audio_batch": [
         "14",
-        0
+        1
       ],
       "audio_format": "wav",
-      "filename_prefix": "creator-loop-master",
-      "subfolder": "fireredaudio/renders"
+      "project_name": "v014-approved",
+      "subfolder": "fireredaudio/exports",
+      "create_zip": true,
+      "continue_on_error": true,
+      "preview_limit": 40
     }
   }
 }

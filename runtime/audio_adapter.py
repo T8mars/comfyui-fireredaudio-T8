@@ -182,12 +182,7 @@ def save_text_file(
 def saved_audio_ui(path: str | Path) -> dict:
     """Return ComfyUI's native saved-audio descriptor for an existing output file."""
     target = Path(path).resolve()
-    try:
-        import folder_paths
-
-        root = Path(folder_paths.get_output_directory()).resolve()
-    except Exception:
-        root = (Path.cwd() / "output").resolve()
+    root = output_root()
     try:
         relative = target.relative_to(root)
     except ValueError as exc:
@@ -215,12 +210,7 @@ def saved_audio_files_ui(paths: list[str | Path]) -> dict:
 
 
 def _safe_output_dir(subfolder: str) -> Path:
-    try:
-        import folder_paths
-
-        root = Path(folder_paths.get_output_directory()).resolve()
-    except Exception:
-        root = (Path.cwd() / "output").resolve()
+    root = output_root()
     relative = Path(str(subfolder or "fireredaudio").replace("\\", "/"))
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError("输出子目录不能使用绝对路径或 ..")
@@ -231,6 +221,17 @@ def _safe_output_dir(subfolder: str) -> Path:
         raise ValueError("输出目录越界") from exc
     target.mkdir(parents=True, exist_ok=True)
     return target
+
+
+def output_root() -> Path:
+    try:
+        import folder_paths
+
+        root = Path(folder_paths.get_output_directory()).resolve()
+    except Exception:
+        root = (Path.cwd() / "output").resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def _safe_name(value: str, fallback: str) -> str:

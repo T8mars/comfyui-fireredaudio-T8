@@ -18,5 +18,6 @@ else:
             "Load comfyui-fireredaudio-T8 as a ComfyUI package, not as a standalone __init__.py module."
         )
 
-__version__ = "0.13.0"
-__all__ = ["comfy_entrypoint", "__version__"]
+WEB_DIRECTORY = "./web"
+__version__ = "0.14.0"
+__all__ = ["WEB_DIRECTORY", "comfy_entrypoint", "__version__"]

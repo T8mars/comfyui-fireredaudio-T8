@@ -1,0 +1,41 @@
+{
+  "1": {
+    "class_type": "T8_FireRedAudio_AudioBatchResume",
+    "inputs": {
+      "manifest_path": "fireredaudio/line-reviews/production-review-YYYYMMDD/review-manifest.json",
+      "missing_policy": "mark_missing",
+      "verify_hashes": false,
+      "allow_external_manifest": false
+    }
+  },
+  "2": {
+    "class_type": "T8_FireRedAudio_LineReview",
+    "inputs": {
+      "audio_batch": [
+        "1",
+        0
+      ],
+      "decisions_json": "{}",
+      "ratings_json": "{}",
+      "notes_json": "{}",
+      "review_name": "resumed-review",
+      "subfolder": "fireredaudio/line-reviews",
+      "preview_limit": 80
+    }
+  },
+  "3": {
+    "class_type": "T8_FireRedAudio_SaveAudioBatch",
+    "inputs": {
+      "audio_batch": [
+        "2",
+        1
+      ],
+      "audio_format": "wav",
+      "project_name": "resumed-approved",
+      "subfolder": "fireredaudio/exports",
+      "create_zip": true,
+      "continue_on_error": true,
+      "preview_limit": 80
+    }
+  }
+}

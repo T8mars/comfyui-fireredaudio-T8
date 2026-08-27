@@ -72,9 +72,13 @@ class ScriptLine:
     start_seconds: float | None = None
     end_seconds: float | None = None
     scene: str = ""
+    source_text: str = ""
+    normalization: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["normalization"] = list(self.normalization)
+        return data
 
 
 @dataclass(frozen=True)
@@ -323,6 +327,8 @@ def load_project_exchange(
             start_seconds=(None if raw.get("start_seconds") is None else float(raw["start_seconds"])),
             end_seconds=(None if raw.get("end_seconds") is None else float(raw["end_seconds"])),
             scene=str(raw.get("scene") or "").strip(),
+            source_text=str(raw.get("source_text") or "").strip(),
+            normalization=tuple(str(item) for item in (raw.get("normalization") or [])),
         )
         for index, raw in enumerate(raw_plan.get("lines") or [])
         if isinstance(raw, dict)
