@@ -22,8 +22,11 @@
 - `20_creator_qa_repair_delivery`：多角色分块批配音、逐条 QA、失败 line ID 定向返修、人工试听选择、批量下载 ZIP 与最终混音交付
 - `21_podcast_local_repair`：手工选择时间范围、语义编辑片段、等功率回填，并分别保存原版/修复版 A/B
 - `22_production_package`：从项目交换 AudioBatch 导出角色/场景分轨、Master、BGM、room tone、SRT/VTT、Manifest 与一键 ZIP
+- `23_long_reference_screening`：长录音非破坏筛选候选、原生试听评分、采用后 ASR 核对并生成 VoiceProfile
+- `24_seed_blind_review`：同句多 Seed 使用不暴露 Seed 的文件名盲听，记录 1–5 分、备注和唯一采用 Take
+- `25_acceleration_benchmark`：固定参考、文本、Seed 和参数，对 off/FlashAttention/DeepSpeed 暖机并各正式测量至少三次
 
-`ui` 目录可直接拖入 ComfyUI；`api` 目录用于 `/prompt` API。请先把示例引用的 `voice_reference.wav`、`comparison.wav`、`candidate_a.wav`、`candidate_b.wav`、`room_tone.wav`、`long_recording.wav`、`podcast_source.wav`、`approved_master.wav`、`bgm.wav`、`narrator_reference.wav` 或 `actor_reference.wav` 上传到 ComfyUI input，并按实际扫描结果修改模型加载器中的模型名称。`22_production_package` 还需要把桌面整合包导出的 `project-exchange.json` 路径改成当前机器上的实际路径。
+`ui` 目录可直接拖入 ComfyUI；`api` 目录用于 `/prompt` API。请先把示例引用的 `voice_reference.wav`、`long_voice_recording.wav`、`comparison.wav`、`candidate_a.wav`、`candidate_b.wav`、`room_tone.wav`、`long_recording.wav`、`podcast_source.wav`、`approved_master.wav`、`bgm.wav`、`narrator_reference.wav` 或 `actor_reference.wav` 上传到 ComfyUI input，并按实际扫描结果修改模型加载器中的模型名称。`22_production_package` 还需要把桌面整合包导出的 `project-exchange.json` 路径改成当前机器上的实际路径。
 
 V3 Autogrow 输入在 `/prompt` API 中必须使用点路径，例如 `profiles.profile_0` 或 `audios.audio_0`；示例 API 已按此格式提供，不能改成未分组的 `profile_0`/`audio_0`。
 

@@ -356,6 +356,50 @@ def build() -> None:
         "6": {"class_type": "T8_FireRedAudio_ProductionPackage", "inputs": {"audio_batch": ["1", 2], "project_name": "podcast-delivery", "subfolder": "fireredaudio/deliveries", "sample_rate": 48000, "crossfade_ms": 40, "include_role_stems": True, "include_scene_stems": True, "create_zip": True, "master_audio": ["2", 0], "bgm_audio": ["3", 0], "room_tone_audio": ["4", 0], "delivery_preset": ["5", 0]}},
     })
 
+    reference_search_audio = node(2, "LoadAudio", [60, 500], ["long_voice_recording.wav", None, None], [], [out("AUDIO", "AUDIO", [2])], [310, 170])
+    reference_search = node(3, "T8_FireRedAudio_ReferenceCandidates", [460, 320], ["reference-search", "fireredaudio/reference-candidates", 3.0, 8.0, 15.0, 0.2, 8, True, "zh"], [port("source_audio", "AUDIO", 2), port("model", "T8_FIREREDAUDIO_MODEL", 1)], [out("recommended_audio", "AUDIO"), out("candidates", "T8_FIREREDAUDIO_AUDIO_BATCH", [3], slot_index=1), out("recommended_line_id", "STRING", slot_index=2), out("manifest_path", "STRING", slot_index=3), out("ranking_report", "STRING", slot_index=4)], [500, 500])
+    reference_review = node(4, "T8_FireRedAudio_TakeReviewBoard", [1040, 330], [1, "", "{}", "{}", "reference-review", "fireredaudio/reviews", 8], [port("audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", 3)], [out("selected_audio", "AUDIO", [4]), out("reviewed_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", slot_index=1), out("selected_line_id", "STRING", slot_index=2), out("review_manifest_path", "STRING", slot_index=3), out("review_report", "STRING", slot_index=4)], [470, 430])
+    reference_transcript = node(5, "T8_FireRedAudio_ReferenceTranscript", [1580, 350], [512], [port("model", "T8_FIREREDAUDIO_MODEL", 5), port("reference_audio", "AUDIO", 4)], [out("reference_audio", "AUDIO", [6]), out("transcript", "STRING", [7], slot_index=1), out("report", "STRING", slot_index=2)], [430, 260])
+    reference_profile = node(6, "T8_FireRedAudio_VoiceProfile", [2080, 350], ["旁白候选", "zh", "长录音筛选,人工确认"], [port("audio", "AUDIO", 6), port("prompt_text", "STRING", 7)], [out("profile", "T8_FIREREDAUDIO_VOICE_PROFILE"), out("profile_json", "STRING", slot_index=1)], [430, 300])
+    reference_search_links = [[1, 1, 0, 3, 1, "T8_FIREREDAUDIO_MODEL"], [2, 2, 0, 3, 0, "AUDIO"], [3, 3, 1, 4, 0, "T8_FIREREDAUDIO_AUDIO_BATCH"], [4, 4, 0, 5, 1, "AUDIO"], [5, 1, 0, 5, 0, "T8_FIREREDAUDIO_MODEL"], [6, 5, 0, 6, 0, "AUDIO"], [7, 5, 1, 6, 1, "STRING"]]
+    save("ui_23_long_reference_screening", workflow([model_node([1, 5]), reference_search_audio, reference_search, reference_review, reference_transcript, reference_profile], reference_search_links))
+    save("api_23_long_reference_screening", {
+        "1": {"class_type": "T8_FireRedAudio_ModelLoader", "inputs": {"model_name": "FireRedAudio", "custom_model_path": "", "device": "auto", "memory_mode": "auto", "acceleration_mode": "auto_safe", "profile": "lite", "worker_mode": "managed", "runtime_python": "", "worker_url": "", "worker_token": "", "verify_hashes": False, "release_after_run": False}},
+        "2": {"class_type": "LoadAudio", "inputs": {"audio": "long_voice_recording.wav"}},
+        "3": {"class_type": "T8_FireRedAudio_ReferenceCandidates", "inputs": {"source_audio": ["2", 0], "project_name": "reference-search", "subfolder": "fireredaudio/reference-candidates", "min_seconds": 3.0, "preferred_seconds": 8.0, "max_seconds": 15.0, "padding_seconds": 0.2, "max_candidates": 8, "run_asr_check": True, "language": "zh", "model": ["1", 0]}},
+        "4": {"class_type": "T8_FireRedAudio_TakeReviewBoard", "inputs": {"audio_batch": ["3", 1], "selected_position": 1, "selected_line_id": "", "ratings_json": "{}", "notes_json": "{}", "review_name": "reference-review", "subfolder": "fireredaudio/reviews", "preview_limit": 8}},
+        "5": {"class_type": "T8_FireRedAudio_ReferenceTranscript", "inputs": {"model": ["1", 0], "reference_audio": ["4", 0], "max_new_tokens": 512}},
+        "6": {"class_type": "T8_FireRedAudio_VoiceProfile", "inputs": {"audio": ["5", 0], "name": "旁白候选", "prompt_text": ["5", 1], "language": "zh", "tags": "长录音筛选,人工确认"}},
+    })
+
+    blind_audio = node(2, "LoadAudio", [60, 480], ["voice_reference.wav", None, None], [], [out("AUDIO", "AUDIO", [2])], [310, 170])
+    blind_settings = node(3, "T8_FireRedAudio_GenerationSettings", [460, 70], ["balanced", 42, 750, 6, 512, 10, 2.0], [], [out("settings", "T8_FIREREDAUDIO_SETTINGS", [3])], [330, 280])
+    blind_audition = node(4, "T8_FireRedAudio_SeedAudition", [850, 250], ["这是用于盲听的参考音频。", "请盲听并选择最自然、最符合角色的一条。", "zh", 42, 4, True, "blind-audition", "fireredaudio/auditions"], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("prompt_audio", "AUDIO", 2), port("settings", "T8_FIREREDAUDIO_SETTINGS", 3)], [out("recommended_audio", "AUDIO"), out("all_takes", "T8_FIREREDAUDIO_AUDIO_BATCH", [4], slot_index=1), out("manifest_path", "STRING", slot_index=2), out("reference_transcript", "STRING", slot_index=3), out("audition_report", "STRING", slot_index=4)], [500, 450])
+    blind_review = node(5, "T8_FireRedAudio_TakeReviewBoard", [1420, 280], [1, "", "{\"take-001\": 5, \"take-002\": 4}", "{\"take-001\": \"最自然\"}", "blind-review", "fireredaudio/reviews", 4], [port("audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", 4)], [out("selected_audio", "AUDIO", [5]), out("reviewed_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", slot_index=1), out("selected_line_id", "STRING", slot_index=2), out("review_manifest_path", "STRING", slot_index=3), out("review_report", "STRING", slot_index=4)], [490, 450])
+    blind_save = node(6, "T8_FireRedAudio_SaveAudio", [1980, 370], ["wav", "blind-selected", "fireredaudio/auditions"], [port("audio", "AUDIO", 5)], [out("saved_path", "STRING"), out("audio", "AUDIO", slot_index=1)], [400, 250])
+    blind_links = [[1, 1, 0, 4, 0, "T8_FIREREDAUDIO_MODEL"], [2, 2, 0, 4, 1, "AUDIO"], [3, 3, 0, 4, 2, "T8_FIREREDAUDIO_SETTINGS"], [4, 4, 1, 5, 0, "T8_FIREREDAUDIO_AUDIO_BATCH"], [5, 5, 0, 6, 0, "AUDIO"]]
+    save("ui_24_seed_blind_review", workflow([model_node([1]), blind_audio, blind_settings, blind_audition, blind_review, blind_save], blind_links))
+    save("api_24_seed_blind_review", {
+        "1": {"class_type": "T8_FireRedAudio_ModelLoader", "inputs": {"model_name": "FireRedAudio", "custom_model_path": "", "device": "auto", "memory_mode": "auto", "acceleration_mode": "auto_safe", "profile": "full", "worker_mode": "managed", "runtime_python": "", "worker_url": "", "worker_token": "", "verify_hashes": False, "release_after_run": False}},
+        "2": {"class_type": "LoadAudio", "inputs": {"audio": "voice_reference.wav"}},
+        "3": {"class_type": "T8_FireRedAudio_GenerationSettings", "inputs": {"quality_preset": "balanced", "seed": 42, "max_new_audio_steps": 750, "min_new_audio_steps": 6, "max_new_text_tokens": 512, "n_timesteps": 10, "inference_cfg": 2.0}},
+        "4": {"class_type": "T8_FireRedAudio_SeedAudition", "inputs": {"model": ["1", 0], "prompt_audio": ["2", 0], "prompt_text": "这是用于盲听的参考音频。", "target_text": "请盲听并选择最自然、最符合角色的一条。", "language": "zh", "seed_start": 42, "take_count": 4, "run_asr_qa": True, "project_name": "blind-audition", "subfolder": "fireredaudio/auditions", "settings": ["3", 0]}},
+        "5": {"class_type": "T8_FireRedAudio_TakeReviewBoard", "inputs": {"audio_batch": ["4", 1], "selected_position": 1, "selected_line_id": "", "ratings_json": "{\"take-001\": 5, \"take-002\": 4}", "notes_json": "{\"take-001\": \"最自然\"}", "review_name": "blind-review", "subfolder": "fireredaudio/reviews", "preview_limit": 4}},
+        "6": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["5", 0], "audio_format": "wav", "filename_prefix": "blind-selected", "subfolder": "fireredaudio/auditions"}},
+    })
+
+    benchmark_audio = node(2, "LoadAudio", [60, 500], ["voice_reference.wav", None, None], [], [out("AUDIO", "AUDIO", [2])], [310, 170])
+    benchmark_settings = node(3, "T8_FireRedAudio_GenerationSettings", [460, 80], ["balanced", 42, 750, 6, 512, 10, 2.0], [], [out("settings", "T8_FIREREDAUDIO_SETTINGS", [3])], [330, 280])
+    benchmark = node(4, "T8_FireRedAudio_AccelerationBenchmark", [860, 250], ["这是固定的参考音频逐字稿。", "这句话用于比较不同加速模式的真实速度。", "zh", "off,flash_attention,deepspeed", 1, 3, 10.0, True, "acceleration-benchmark", "fireredaudio/benchmarks"], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("prompt_audio", "AUDIO", 2), port("settings", "T8_FIREREDAUDIO_SETTINGS", 3)], [out("benchmark_outputs", "T8_FIREREDAUDIO_AUDIO_BATCH"), out("recommendation", "STRING", slot_index=1), out("benchmark_report", "STRING", slot_index=2), out("manifest_path", "STRING", slot_index=3)], [560, 500])
+    benchmark_links = [[1, 1, 0, 4, 0, "T8_FIREREDAUDIO_MODEL"], [2, 2, 0, 4, 1, "AUDIO"], [3, 3, 0, 4, 2, "T8_FIREREDAUDIO_SETTINGS"]]
+    save("ui_25_acceleration_benchmark", workflow([model_node([1]), benchmark_audio, benchmark_settings, benchmark], benchmark_links))
+    save("api_25_acceleration_benchmark", {
+        "1": {"class_type": "T8_FireRedAudio_ModelLoader", "inputs": {"model_name": "FireRedAudio", "custom_model_path": "", "device": "auto", "memory_mode": "auto", "acceleration_mode": "off", "profile": "full", "worker_mode": "managed", "runtime_python": "", "worker_url": "", "worker_token": "", "verify_hashes": False, "release_after_run": False}},
+        "2": {"class_type": "LoadAudio", "inputs": {"audio": "voice_reference.wav"}},
+        "3": {"class_type": "T8_FireRedAudio_GenerationSettings", "inputs": {"quality_preset": "balanced", "seed": 42, "max_new_audio_steps": 750, "min_new_audio_steps": 6, "max_new_text_tokens": 512, "n_timesteps": 10, "inference_cfg": 2.0}},
+        "4": {"class_type": "T8_FireRedAudio_AccelerationBenchmark", "inputs": {"model": ["1", 0], "prompt_audio": ["2", 0], "prompt_text": "这是固定的参考音频逐字稿。", "target_text": "这句话用于比较不同加速模式的真实速度。", "language": "zh", "modes": "off,flash_attention,deepspeed", "warmup_runs": 1, "measure_runs": 3, "minimum_improvement_percent": 10.0, "require_reproducible_hash": True, "project_name": "acceleration-benchmark", "subfolder": "fireredaudio/benchmarks", "settings": ["3", 0]}},
+    })
+
 
 if __name__ == "__main__":
     build()

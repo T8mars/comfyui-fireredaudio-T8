@@ -1,6 +1,6 @@
 # comfyui-fireredaudio-T8
 
-FireRedAudio 的 36 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点菜单：
+FireRedAudio 的 39 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点菜单：
 
 `T8star-Aix / Audio / FireRedAudio`
 
@@ -13,6 +13,8 @@ FireRedAudio 的 36 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成�
 - 中英文零样本声音克隆
 - 参考音频一键 ASR 逐字稿；可连接到 TTS/音色档案，TTS 留空时也可自动转写后继续生成
 - 2–8 个 Seed latent-first 批量试音，可选逐条 ASR 回读并按文本误差、削波、静音和时长稳定性推荐 Take
+- 长录音参考候选：非破坏提取 3–15 秒片段，按削波、静音、能量对比、语音活动和时长排序，可选明确标注为代理指标的 ASR 可懂度复排
+- 多 Take 试听评审板：使用 ComfyUI 原生播放器/下载入口，记录 1–5 分、备注和唯一采用项，不修改候选音频
 - 自然语言声音设计
 - 语义语音编辑
 - 严格模板和参数化两种音高、速度、音量声学编辑
@@ -35,6 +37,7 @@ FireRedAudio 的 36 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成�
 - 分轨制作交付包：角色/场景等长对白分轨、Master、dialogue、BGM、room tone、实际 SRT/VTT、模型版本、参数与素材 SHA-256 一键 ZIP
 - WAV、FLAC、MP3、OGG 音频与 SRT、VTT、TXT、JSONL 安全保存；保存音频节点在 ComfyUI 结果区提供原生播放器/下载入口
 - 冷/热启动、分阶段耗时、RTF 和 CUDA 峰值显存性能报告
+- 加速实测向导：固定参考、文本、Seed 和参数，对 `off`、FlashAttention、DeepSpeed 等模式分别暖机并至少正式测量 3 次，比较中位耗时、RTF、峰值显存、哈希和实际回退，只给建议不自动改设置
 - 模型校验、真实 GPU/空闲显存报告、缓存清理、显存释放和 Worker 停止
 - ComfyUI V3 进度同步、中断联动取消、快速/均衡/高质量预设
 
@@ -105,7 +108,7 @@ python scripts/download_models.py --target "D:\ComfyUI\models\TTS\FireRedAudio" 
 3. 可选连接 `FireRedAudio 生成参数`。
 4. TTS 输出连接 `FireRedAudio 保存音频`，可选择 WAV/FLAC/MP3/OGG。
 
-示例见 `example_workflows/ui` 和 `example_workflows/api`。`15_reference_cleanup` 演示参考音频质检后再生成不覆盖源文件的清理副本；`16_synchronized_ab` 演示两个候选同步起点、匹配响度并分别保存；`17_reference_asr_tts` 演示自动逐字稿驱动 TTS；`18_seed_audition` 演示多 Seed 试音；`19_long_audio_evidence` 演示定位结果直接生成证据片段；`20_creator_qa_repair_delivery` 演示分块批配音、QA 失败返修、试听选择和批量 ZIP；`21_podcast_local_repair` 演示手工范围、语义编辑、回填与 A/B 保存；`22_production_package` 演示从项目交换 AudioBatch 导出角色/场景分轨和完整制作包。参考清理不会执行降噪、去混响或削波伪修复。
+示例见 `example_workflows/ui` 和 `example_workflows/api`。`15_reference_cleanup` 演示参考音频质检后再生成不覆盖源文件的清理副本；`16_synchronized_ab` 演示两个候选同步起点、匹配响度并分别保存；`17_reference_asr_tts` 演示自动逐字稿驱动 TTS；`18_seed_audition` 演示多 Seed 试音；`19_long_audio_evidence` 演示定位结果直接生成证据片段；`20_creator_qa_repair_delivery` 演示分块批配音、QA 失败返修、试听选择和批量 ZIP；`21_podcast_local_repair` 演示手工范围、语义编辑、回填与 A/B 保存；`22_production_package` 演示从项目交换 AudioBatch 导出角色/场景分轨和完整制作包；`23_long_reference_screening` 演示长录音筛选、人工试听、ASR 和 VoiceProfile；`24_seed_blind_review` 演示隐藏 Seed 文件名的多 Take 盲听评分与采用；`25_acceleration_benchmark` 演示真实加速实测。参考清理和候选筛选都不会执行降噪、去混响或削波伪修复。
 
 长音频字幕是静音感知的分段级近似时间，不是词级强制对齐。批量配音和多 Seed 试音都使用 Worker `tts-batch`；批量配音默认每批 8 条并允许不同角色参考，在顺序卸载模式中先完成本批 latent，再统一切换解码器，减少逐句切换大模型。每条结果仍独立落盘、记录和恢复。
 
@@ -137,6 +140,10 @@ room tone ─────────────────────┼→ 
 有声书/播客/视频对白交付预设 ───┘        └→ 同一交付预设
 
 AudioBatch + 可选 Master/BGM/room tone/字幕 → 分轨制作交付包 → Manifest + ZIP
+
+长录音 → 参考候选筛选 → 多 Take 试听评审 → ASR 核对逐字稿 → VoiceProfile
+
+固定参考/逐字稿/目标文本/Seed → 加速实测向导 → 人工把建议模式填回模型加载器
 ```
 
 交叉淡化只作用于相邻对白的真实重叠区域；`sequence` 模式启用交叉淡化时，相邻重叠会替代顺序间隔。自动补空隙必须连接 room tone，渲染器只在没有对白覆盖的时间段循环填充，并在边缘加入短淡化，不会把背景声铺到对白上。
@@ -164,6 +171,12 @@ SRT 的正文可用 `[角色] 台词` 标记角色。角色脚本支持 `# 场�
 
 “分轨制作交付包”使用时间线的实际落点生成 SRT/VTT，角色和场景分轨会用静音补齐到同一 Master 终点，便于直接导入 DAW。连接的外部 Master、BGM 和 room tone 会原样收进包；该节点不会假装替用户完成未指定的 BGM 混音，Manifest 会明确记录每项素材是否由本节点混入。ZIP 同时保存上游代码/模型 revision、Worker revision、生成参数、交付预设和全部产物 SHA-256。
 
+“长录音参考候选”保留源采样率和声道，源文件前后 SHA-256 必须一致。信号排序不是主观音质预测；启用 ASR 时也只根据非空文本、语速和重复度生成明确标注的可懂度代理，不能冒充有真值逐字稿的 WER/CER。推荐候选仍须进入“多 Take 试听评审板”人工试听，再通过“参考音频 ASR 逐字稿”核对文字后生成 VoiceProfile。
+
+“多 Take 试听评审板”采用纯节点实现，不安装自定义前端 JS：候选通过 ComfyUI 官方原生音频预览协议显示，支持播放和下载；评分、备注与选中 line ID 写入新的 review manifest，每批只有一个 `adopted=true`，源 AudioBatch 和 WAV 不变。多 Seed 试音的文件名改为不暴露 Seed 的 `take-001.wav` 等，Seed 只留在审计 Manifest，适合盲听。
+
+“加速实测向导”会自动补入 `off` 基线，每种模式先暖机，再正式运行 3–9 次；缺轮子或 ABI 不匹配导致的回退不会被误当成该模式成绩。FlashAttention 等普通候选默认至少快 10%，DeepSpeed/FLA/Torch Compile 等实验模式至少快 20%，并可要求同 Seed 多轮 SHA-256 一致后才推荐。节点结束会释放模型，只输出建议和完整证据，不会修改模型加载器。
+
 ## 真模型长跑验收
 
 可在目标机器运行节点仓库自带的验收脚本；模型保持外置：
@@ -180,6 +193,10 @@ v0.9.0 在 RTX 5090 Laptop 上完成 20/20 轮真实 TTS，所有 WAV 均通过�
 v0.10.0 的多 Seed 专用链路另做了 2 条真模型 Smoke：Seed 4200/4201 均生成有效 24 kHz WAV，输出 5.28/4.96 秒且哈希不同；Worker 报告执行模型为 `latent_first_decode_later`，第二条复用参考条件并只进行一次批量解码器切换。冷启动总耗时包含 67.714 秒模型加载，不能拿该值代表暖机速度。
 
 v0.11.0 的新 `BatchDubbing` 包装层使用两句真实 TTS 做了独立 Smoke：2/2 生成有效 24 kHz WAV，单次 Worker 批次报告为 `latent_first_decode_later`，冷启动总耗时 120.923 秒；同一节点重新执行时 2/2 命中 Manifest，耗时 0.030 秒且两条文件 SHA-256 均未变化。该测试证明分块、落盘与恢复链路，不把冷启动时长当作通用速度结论，也没有运行 ASR。
+
+v0.13.0 的无真模型执行级验收覆盖长录音候选、原生试听、人工采用和加速决策算法：源哈希不变、唯一采用项成立，模拟 `off/flash_attention/deepspeed` 每模式 3 次正式测量共 9 条，正确推荐有效快路径并排除实际回退。具体机器的速度结论必须在该机器运行第 25 组工作流，不能用模拟验收数字代替。
+
+同版本随后在 RTX 5090 Laptop、24 GiB、`sequential` 上完成真模型第 25 组等价实测：三种模式均无回退且每模式 3/3 正式 WAV 同 Seed 哈希可复现；`off` 中位 24.182 秒 / RTF 6.297，FlashAttention 21.179 秒 / RTF 5.515（快 12.418%），DeepSpeed 20.659 秒 / RTF 5.380（快 14.569%），峰值显存均约 19.850 GiB。按普通候选 10%、实验模式 20% 门槛推荐 FlashAttention；DeepSpeed 虽略快但未达到实验采用门槛。此结论仍只适用于这台机器和固定短句工作流。
 
 仓库每周读取固定清单中的 FireRedAudio 代码与模型 revision，并与 GitHub/Hugging Face 最新 revision 比较。发现变化只创建兼容性审计提醒，不自动升级；仍需通过宿主 Python/Transformers 矩阵、ComfyUI schema 和真模型 Smoke Test 后才能更新固定版本。
 

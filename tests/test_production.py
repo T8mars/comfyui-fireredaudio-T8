@@ -682,6 +682,42 @@ class ExampleWorkflowTests(unittest.TestCase):
         self.assertTrue(package["6"]["inputs"]["include_scene_stems"])
         self.assertTrue(package["6"]["inputs"]["create_zip"])
 
+    def test_v013_workflows_cover_reference_review_blind_take_and_real_benchmark(self) -> None:
+        reference = json.loads(
+            (ROOT / "example_workflows" / "api" / "23_long_reference_screening.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        blind = json.loads(
+            (ROOT / "example_workflows" / "api" / "24_seed_blind_review.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        benchmark = json.loads(
+            (ROOT / "example_workflows" / "api" / "25_acceleration_benchmark.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        reference_types = {value["class_type"] for value in reference.values()}
+        self.assertTrue(
+            {
+                "T8_FireRedAudio_ReferenceCandidates",
+                "T8_FireRedAudio_TakeReviewBoard",
+                "T8_FireRedAudio_ReferenceTranscript",
+                "T8_FireRedAudio_VoiceProfile",
+            }.issubset(reference_types)
+        )
+        self.assertEqual(reference["4"]["inputs"]["audio_batch"], ["3", 1])
+        self.assertEqual(reference["5"]["inputs"]["reference_audio"], ["4", 0])
+        self.assertEqual(reference["6"]["inputs"]["prompt_text"], ["5", 1])
+        self.assertEqual(blind["5"]["inputs"]["audio_batch"], ["4", 1])
+        self.assertIn("take-001", blind["5"]["inputs"]["ratings_json"])
+        benchmark_node = benchmark["4"]["inputs"]
+        self.assertEqual(benchmark_node["modes"], "off,flash_attention,deepspeed")
+        self.assertGreaterEqual(benchmark_node["warmup_runs"], 1)
+        self.assertGreaterEqual(benchmark_node["measure_runs"], 3)
+        self.assertTrue(benchmark_node["require_reproducible_hash"])
+
 
 class EvidenceClipTests(unittest.TestCase):
     def test_extracts_common_time_formats_and_deduplicates(self) -> None:

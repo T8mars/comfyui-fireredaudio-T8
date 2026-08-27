@@ -8,8 +8,10 @@ import shutil
 import statistics
 import sys
 import threading
+import time
 import uuid
 import zipfile
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -71,6 +73,10 @@ from .runtime.production import (
     wav_metrics,
     write_manifest,
 )
+from .runtime.reference_candidates import (
+    asr_intelligibility_proxy,
+    discover_reference_candidates,
+)
 from .runtime.types import (
     DELIVERY_PRESETS,
     DeliveryPreset,
@@ -92,7 +98,7 @@ AudioBatchType = io.Custom("T8_FIREREDAUDIO_AUDIO_BATCH")
 SpeechQAType = io.Custom("T8_FIREREDAUDIO_SPEECH_QA")
 DeliveryPresetType = io.Custom("T8_FIREREDAUDIO_DELIVERY_PRESET")
 LocalRepairPlanType = io.Custom("T8_FIREREDAUDIO_LOCAL_REPAIR_PLAN")
-NODE_VERSION = "0.12.0"
+NODE_VERSION = "0.13.0"
 
 LONG_LOCATE_PROMPTS = {
     "timeline_summary": (
@@ -939,7 +945,9 @@ class T8FireRedAudioSeedAudition(io.ComfyNode):
                     "prompt_text": transcript,
                     "target_text": target_text,
                     "language": language,
-                    "output_path": str(project_dir / f"take-seed-{seed}.wav"),
+                    # Keep filenames opaque so the native preview list can be used
+                    # for a real blind listen; the seed remains in the manifest.
+                    "output_path": str(project_dir / f"take-{offset + 1:03d}.wav"),
                 }
             )
             requests.append(request)
@@ -1306,6 +1314,166 @@ class T8FireRedAudioLocalRepairApply(io.ComfyNode):
             wav_to_audio(repair_plan.source_path),
             wav_to_audio(output),
             _json(report),
+        )
+
+
+class T8FireRedAudioReferenceCandidates(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_ReferenceCandidates",
+            display_name="FireRedAudio 长录音参考候选 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "从长录音非破坏提取 3–15 秒候选，按削波、静音、能量对比、"
+                "语音活动和时长排序；可选 ASR 可懂度代理，最终必须人工试听。"
+            ),
+            inputs=[
+                io.Audio.Input("source_audio", display_name="长录音"),
+                io.String.Input("project_name", display_name="候选项目名", default="reference-search"),
+                io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/reference-candidates"),
+                io.Float.Input("min_seconds", display_name="最短候选（秒）", default=3.0, min=1.0, max=30.0, step=0.5),
+                io.Float.Input("preferred_seconds", display_name="推荐候选（秒）", default=8.0, min=1.0, max=30.0, step=0.5),
+                io.Float.Input("max_seconds", display_name="最长候选（秒）", default=15.0, min=1.0, max=30.0, step=0.5),
+                io.Float.Input("padding_seconds", display_name="语音前后留白（秒）", default=0.2, min=0.0, max=2.0, step=0.05),
+                io.Int.Input("max_candidates", display_name="候选数量", default=8, min=1, max=20),
+                io.Boolean.Input("run_asr_check", display_name="使用 ASR 可懂度代理复排", default=False),
+                io.Combo.Input("language", display_name="ASR 语言", options=["zh", "en"], default="zh"),
+                ModelType.Input("model", display_name="可选 FireRedAudio 运行时", optional=True),
+            ],
+            outputs=[
+                io.Audio.Output("recommended_audio", display_name="信号/ASR 推荐候选"),
+                AudioBatchType.Output("candidates", display_name="全部候选"),
+                io.String.Output("recommended_line_id", display_name="推荐 line ID"),
+                io.String.Output("manifest_path", display_name="候选 Manifest 路径"),
+                io.String.Output("ranking_report", display_name="排序报告"),
+            ],
+        )
+
+    @classmethod
+    def validate_inputs(
+        cls,
+        min_seconds: float,
+        preferred_seconds: float,
+        max_seconds: float,
+        run_asr_check: bool,
+        model: RuntimeHandle | None = None,
+        **kwargs,
+    ) -> bool | str:
+        if not 1.0 <= float(min_seconds) <= float(preferred_seconds) <= float(max_seconds) <= 30.0:
+            return "候选时长必须满足 1 ≤ 最短 ≤ 推荐 ≤ 最长 ≤ 30 秒。"
+        if run_asr_check and model is None:
+            return "启用 ASR 可懂度代理时必须连接 FireRedAudio 运行时。"
+        return True
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        source_audio: dict,
+        project_name: str,
+        subfolder: str,
+        min_seconds: float,
+        preferred_seconds: float,
+        max_seconds: float,
+        padding_seconds: float,
+        max_candidates: int,
+        run_asr_check: bool,
+        language: str,
+        model: RuntimeHandle | None = None,
+        **kwargs,
+    ) -> str:
+        source = audio_to_wav(source_audio, "reference-candidates-source")
+        return stable_digest(
+            {
+                "source_sha256": file_digest(source),
+                "project_name": project_name,
+                "subfolder": subfolder,
+                "min_seconds": float(min_seconds),
+                "preferred_seconds": float(preferred_seconds),
+                "max_seconds": float(max_seconds),
+                "padding_seconds": float(padding_seconds),
+                "max_candidates": int(max_candidates),
+                "run_asr_check": bool(run_asr_check),
+                "language": language,
+                "model": model.to_dict() if isinstance(model, RuntimeHandle) else None,
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        source_audio: dict,
+        project_name: str,
+        subfolder: str,
+        min_seconds: float,
+        preferred_seconds: float,
+        max_seconds: float,
+        padding_seconds: float,
+        max_candidates: int,
+        run_asr_check: bool,
+        language: str,
+        model: RuntimeHandle | None = None,
+    ) -> io.NodeOutput:
+        if run_asr_check and model is None:
+            raise ValueError("启用 ASR 可懂度代理时必须连接 FireRedAudio 运行时")
+        source = audio_to_wav(source_audio, "reference-candidates-source")
+        project = _safe_name(project_name, "reference-search")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/reference-candidates"
+        output_dir = _safe_output_dir(f"{clean_subfolder}/{project}-{stamp}")
+        items, report = discover_reference_candidates(
+            source,
+            output_dir,
+            min_seconds=min_seconds,
+            preferred_seconds=preferred_seconds,
+            max_seconds=max_seconds,
+            padding_seconds=padding_seconds,
+            max_candidates=max_candidates,
+        )
+        if run_asr_check:
+            assert model is not None
+            for position, item in enumerate(items, 1):
+                transcript, asr_report = _transcribe_reference(model, item["output_path"])
+                proxy = asr_intelligibility_proxy(
+                    transcript,
+                    float(item["duration_seconds"]),
+                    language,
+                )
+                item["text"] = transcript
+                item["language"] = language
+                item["asr_intelligibility_proxy"] = proxy
+                item["asr_performance"] = asr_report.get("performance")
+                item["ranking_score"] = round(
+                    float(item["signal_score"]) * 0.8 + float(proxy["score"]) * 0.2,
+                    3,
+                )
+                _set_official_progress(position / max(1, len(items)))
+        else:
+            for item in items:
+                item["ranking_score"] = float(item["signal_score"])
+        items.sort(key=lambda item: (-float(item["ranking_score"]), int(item["index"])))
+        recommended = items[0]
+        manifest_path = output_dir / "reference-candidates-manifest.json"
+        report.update(
+            {
+                "manifest_version": MANIFEST_VERSION,
+                "node_version": NODE_VERSION,
+                "run_asr_check": bool(run_asr_check),
+                "asr_metric_is_proxy_not_accuracy": bool(run_asr_check),
+                "recommended_line_id": recommended["line_id"],
+                "items": items,
+            }
+        )
+        write_manifest(manifest_path, report)
+        batch = AudioBatch(str(manifest_path), tuple(items))
+        return io.NodeOutput(
+            wav_to_audio(recommended["output_path"]),
+            batch,
+            str(recommended["line_id"]),
+            str(manifest_path),
+            _json(report),
+            ui=saved_audio_files_ui([item["output_path"] for item in items]),
         )
 
 
@@ -2488,6 +2656,171 @@ class T8FireRedAudioAudioBatchSelect(io.ComfyNode):
         )
 
 
+class T8FireRedAudioTakeReviewBoard(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_TakeReviewBoard",
+            display_name="FireRedAudio 多 Take 试听评审板 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "在结果区显示最多 8 条原生播放器/下载入口，记录 1–5 分和备注，"
+                "显式采用一条 Take；评审只写新 Manifest，不改源音频。"
+            ),
+            inputs=[
+                AudioBatchType.Input("audio_batch", display_name="候选 AudioBatch"),
+                io.Int.Input("selected_position", display_name="采用序号（从 1 开始）", default=1, min=1, max=100000),
+                io.String.Input("selected_line_id", display_name="采用 line ID（优先）", default="", optional=True),
+                io.String.Input(
+                    "ratings_json",
+                    display_name='评分 JSON，例如 {"take-001": 5}',
+                    default="{}",
+                    multiline=True,
+                ),
+                io.String.Input(
+                    "notes_json",
+                    display_name='备注 JSON，例如 {"take-001": "自然"}',
+                    default="{}",
+                    multiline=True,
+                ),
+                io.String.Input("review_name", display_name="评审名称", default="take-review"),
+                io.String.Input("subfolder", display_name="评审记录目录", default="fireredaudio/reviews"),
+                io.Int.Input("preview_limit", display_name="试听数量", default=8, min=2, max=8),
+            ],
+            outputs=[
+                io.Audio.Output("selected_audio", display_name="已采用 Take"),
+                AudioBatchType.Output("reviewed_batch", display_name="带评审记录 AudioBatch"),
+                io.String.Output("selected_line_id", display_name="已采用 line ID"),
+                io.String.Output("review_manifest_path", display_name="评审 Manifest 路径"),
+                io.String.Output("review_report", display_name="评审报告"),
+            ],
+            is_output_node=True,
+        )
+
+    @staticmethod
+    def _mapping(value: str, label: str) -> dict[str, Any]:
+        try:
+            parsed = json.loads(str(value or "{}"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{label}不是有效 JSON") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(f"{label}必须是 JSON 对象")
+        return {str(key): item for key, item in parsed.items()}
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        audio_batch: AudioBatch,
+        selected_position: int,
+        selected_line_id: str,
+        ratings_json: str,
+        notes_json: str,
+        review_name: str,
+        subfolder: str,
+        preview_limit: int,
+        **kwargs,
+    ) -> str:
+        return stable_digest(
+            {
+                "audio_batch": _audio_batch_state(audio_batch),
+                "selected_position": int(selected_position),
+                "selected_line_id": selected_line_id,
+                "ratings_json": ratings_json,
+                "notes_json": notes_json,
+                "review_name": review_name,
+                "subfolder": subfolder,
+                "preview_limit": int(preview_limit),
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        audio_batch: AudioBatch,
+        selected_position: int,
+        selected_line_id: str,
+        ratings_json: str,
+        notes_json: str,
+        review_name: str,
+        subfolder: str,
+        preview_limit: int,
+    ) -> io.NodeOutput:
+        if not isinstance(audio_batch, AudioBatch):
+            raise TypeError("试听评审板必须连接 AudioBatch")
+        playable = audio_batch.successful_items()
+        if not playable:
+            raise ValueError("AudioBatch 中没有可试听候选")
+        ratings = cls._mapping(ratings_json, "评分 JSON")
+        notes = cls._mapping(notes_json, "备注 JSON")
+        known_ids = {str(item.get("line_id") or "") for item in playable}
+        unknown = sorted((set(ratings) | set(notes)) - known_ids)
+        if unknown:
+            raise ValueError("评分或备注包含未知 line ID：" + ", ".join(unknown))
+        normalized_ratings: dict[str, float] = {}
+        for line_id, value in ratings.items():
+            try:
+                score = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{line_id} 的评分必须是 1–5") from exc
+            if not 1.0 <= score <= 5.0:
+                raise ValueError(f"{line_id} 的评分必须是 1–5")
+            normalized_ratings[line_id] = round(score, 2)
+        normalized_notes = {line_id: str(value).strip() for line_id, value in notes.items()}
+        selected = select_audio_batch_item(
+            audio_batch,
+            mode="line_id" if str(selected_line_id).strip() else "position",
+            position=int(selected_position),
+            line_id=str(selected_line_id).strip(),
+        )
+        selected_id = str(selected.get("line_id") or "")
+        reviewed_items: list[dict[str, Any]] = []
+        for item in audio_batch.items:
+            copy = dict(item)
+            line_id = str(copy.get("line_id") or "")
+            copy["human_review"] = {
+                "rating": normalized_ratings.get(line_id),
+                "note": normalized_notes.get(line_id, ""),
+                "adopted": line_id == selected_id,
+            }
+            reviewed_items.append(copy)
+        project = _safe_name(review_name, "take-review")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/reviews"
+        review_dir = _safe_output_dir(f"{clean_subfolder}/{project}-{stamp}")
+        manifest_path = review_dir / "review-manifest.json"
+        report = {
+            "manifest_version": MANIFEST_VERSION,
+            "kind": "take_human_review",
+            "node_version": NODE_VERSION,
+            "source_manifest_path": audio_batch.manifest_path,
+            "selected_line_id": selected_id,
+            "ratings": normalized_ratings,
+            "notes": normalized_notes,
+            "playable_count": len(playable),
+            "previewed_count": min(len(playable), int(preview_limit)),
+            "source_files_overwritten": False,
+            "items": reviewed_items,
+        }
+        write_manifest(manifest_path, report)
+        reviewed_batch = AudioBatch(str(manifest_path), tuple(reviewed_items))
+        ui: dict[str, Any] = {}
+        try:
+            ui = saved_audio_files_ui(
+                [item["output_path"] for item in playable[: max(2, min(8, int(preview_limit)))]]
+            )
+        except ValueError:
+            pass
+        return io.NodeOutput(
+            wav_to_audio(selected["output_path"]),
+            reviewed_batch,
+            selected_id,
+            str(manifest_path),
+            _json(report),
+            ui=ui,
+        )
+
+
 class T8FireRedAudioSaveAudioBatch(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -3131,6 +3464,320 @@ class T8FireRedAudioPerformanceReport(io.ComfyNode):
         return io.NodeOutput(summary, _json(enriched), rtf, total, peak_gib)
 
 
+class T8FireRedAudioAccelerationBenchmark(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_AccelerationBenchmark",
+            display_name="FireRedAudio 加速实测向导 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "固定参考、文本、Seed 和参数，对 off/FlashAttention/DeepSpeed 等模式"
+                "先暖机再测量中位耗时、RTF、峰值显存和输出哈希；只给建议，不修改模型设置。"
+            ),
+            inputs=[
+                ModelType.Input("model"),
+                io.Audio.Input("prompt_audio", display_name="固定参考音频"),
+                io.String.Input("prompt_text", display_name="固定参考逐字稿", multiline=True, dynamic_prompts=True),
+                io.String.Input("target_text", display_name="固定目标文本", multiline=True, dynamic_prompts=True),
+                io.Combo.Input("language", display_name="语言", options=["zh", "en"], default="zh"),
+                io.String.Input("modes", display_name="实测模式（逗号分隔）", default="off,flash_attention,deepspeed"),
+                io.Int.Input("warmup_runs", display_name="每模式暖机次数", default=1, min=1, max=3),
+                io.Int.Input("measure_runs", display_name="每模式正式次数", default=3, min=3, max=9),
+                io.Float.Input("minimum_improvement_percent", display_name="最低有效提速百分比", default=10.0, min=0.0, max=100.0, step=1.0),
+                io.Boolean.Input("require_reproducible_hash", display_name="推荐模式必须同 Seed 哈希一致", default=True),
+                io.String.Input("project_name", display_name="基准项目名", default="acceleration-benchmark"),
+                io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/benchmarks"),
+                SettingsType.Input("settings", display_name="固定生成参数", optional=True),
+            ],
+            outputs=[
+                AudioBatchType.Output("benchmark_outputs", display_name="全部正式测量音频"),
+                io.String.Output("recommendation", display_name="加速建议"),
+                io.String.Output("benchmark_report", display_name="完整基准报告"),
+                io.String.Output("manifest_path", display_name="基准 Manifest 路径"),
+            ],
+            is_output_node=True,
+        )
+
+    @staticmethod
+    def _modes(value: str) -> list[str]:
+        allowed = {"off", "auto_safe", "flash_attention", "deepspeed", "fla_liger", "torch_compile"}
+        result: list[str] = []
+        for raw in str(value or "").replace("，", ",").split(","):
+            mode = raw.strip().lower()
+            if not mode:
+                continue
+            if mode not in allowed:
+                raise ValueError(f"未知加速模式：{mode}")
+            if mode not in result:
+                result.append(mode)
+        if "off" not in result:
+            result.insert(0, "off")
+        if len(result) < 2:
+            raise ValueError("加速实测至少需要 off 和一个候选模式")
+        return result
+
+    @classmethod
+    def validate_inputs(cls, prompt_text: str, target_text: str, modes: str, **kwargs) -> bool | str:
+        if not str(prompt_text).strip():
+            return "加速实测必须填写固定参考逐字稿，避免把 ASR 时间混入 TTS 基准。"
+        if not str(target_text).strip():
+            return "加速实测必须填写固定目标文本。"
+        try:
+            cls._modes(modes)
+        except ValueError as exc:
+            return str(exc)
+        return True
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        model: RuntimeHandle,
+        prompt_audio: dict,
+        prompt_text: str,
+        target_text: str,
+        language: str,
+        modes: str,
+        warmup_runs: int,
+        measure_runs: int,
+        minimum_improvement_percent: float,
+        require_reproducible_hash: bool,
+        project_name: str,
+        subfolder: str,
+        settings: GenerationSettings | None = None,
+        **kwargs,
+    ) -> str:
+        reference = audio_to_wav(prompt_audio, "benchmark-reference")
+        return stable_digest(
+            {
+                "model": model.to_dict(),
+                "reference_sha256": file_digest(reference),
+                "prompt_text": prompt_text,
+                "target_text": target_text,
+                "language": language,
+                "modes": cls._modes(modes),
+                "warmup_runs": int(warmup_runs),
+                "measure_runs": int(measure_runs),
+                "minimum_improvement_percent": float(minimum_improvement_percent),
+                "require_reproducible_hash": bool(require_reproducible_hash),
+                "project_name": project_name,
+                "subfolder": subfolder,
+                "settings": _settings(settings).to_dict(),
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model: RuntimeHandle,
+        prompt_audio: dict,
+        prompt_text: str,
+        target_text: str,
+        language: str,
+        modes: str,
+        warmup_runs: int,
+        measure_runs: int,
+        minimum_improvement_percent: float,
+        require_reproducible_hash: bool,
+        project_name: str,
+        subfolder: str,
+        settings: GenerationSettings | None = None,
+    ) -> io.NodeOutput:
+        requested_modes = cls._modes(modes)
+        reference = audio_to_wav(prompt_audio, "benchmark-reference")
+        project = _safe_name(project_name, "acceleration-benchmark")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/benchmarks"
+        benchmark_dir = _safe_output_dir(f"{clean_subfolder}/{project}-{stamp}")
+        config = _settings(settings)
+        mode_reports: list[dict[str, Any]] = []
+        output_items: list[dict[str, Any]] = []
+        preview_paths: list[str] = []
+        total_iterations = len(requested_modes) * (int(warmup_runs) + int(measure_runs))
+        completed_iterations = 0
+        for mode in requested_modes:
+            handle = replace(model, acceleration_mode=mode, release_after=False)
+            mode_report: dict[str, Any] = {
+                "requested_mode": mode,
+                "warmup_runs": int(warmup_runs),
+                "measure_runs_requested": int(measure_runs),
+                "runs": [],
+                "status": "pending",
+            }
+            try:
+                try:
+                    _client(handle).unload()
+                except Exception:
+                    pass
+                for iteration in range(int(warmup_runs) + int(measure_runs)):
+                    warmup = iteration < int(warmup_runs)
+                    formal_index = iteration - int(warmup_runs) + 1
+                    suffix = f"warmup-{iteration + 1}" if warmup else f"run-{formal_index}"
+                    output = benchmark_dir / f"{mode}-{suffix}.wav"
+                    request = _base_request(handle, "tts", config)
+                    request.update(
+                        {
+                            "task_id": f"benchmark-{mode}-{suffix}-{uuid.uuid4().hex[:8]}",
+                            "prompt_audio": str(reference),
+                            "prompt_text": str(prompt_text).strip(),
+                            "target_text": str(target_text).strip(),
+                            "language": language,
+                            "output_path": str(output),
+                            "release_after": False,
+                        }
+                    )
+                    started = time.perf_counter()
+                    result = _infer(handle, request)
+                    wall_seconds = time.perf_counter() - started
+                    completed_iterations += 1
+                    _set_official_progress(completed_iterations / max(1, total_iterations))
+                    if warmup:
+                        output.unlink(missing_ok=True)
+                        Path(f"{output}.json").unlink(missing_ok=True)
+                        continue
+                    performance = dict(result.get("performance") or {})
+                    health = _client(handle).health()
+                    selection = (
+                        ((health.get("acceleration") or {}).get("selection") or {})
+                        if isinstance(health, dict)
+                        else {}
+                    )
+                    metrics = wav_metrics(output)
+                    digest = file_digest(output)
+                    run = {
+                        "run": formal_index,
+                        "wall_seconds": round(wall_seconds, 6),
+                        "total_seconds": round(float(performance.get("total_seconds") or wall_seconds), 6),
+                        "rtf": float(performance.get("rtf") or 0.0),
+                        "peak_vram_bytes": int(performance.get("gpu_peak_allocated_bytes") or 0),
+                        "output_sha256": digest,
+                        "output_path": str(output),
+                        "output_duration_seconds": metrics["duration_seconds"],
+                        "performance": performance,
+                    }
+                    mode_report["runs"].append(run)
+                    item = {
+                        "line_id": f"{mode}-run-{formal_index}",
+                        "index": len(output_items) + 1,
+                        "speaker": mode,
+                        "text": target_text,
+                        "language": language,
+                        "status": "complete",
+                        "output_path": str(output),
+                        "output_sha256": digest,
+                        "metrics": metrics,
+                        "benchmark": run,
+                    }
+                    output_items.append(item)
+                    if not preview_paths or formal_index == 1:
+                        preview_paths.append(str(output))
+                    mode_report["acceleration_selection"] = selection
+                runs = mode_report["runs"]
+                totals = [float(run["total_seconds"]) for run in runs]
+                rtfs = [float(run["rtf"]) for run in runs if float(run["rtf"]) > 0]
+                hashes = [str(run["output_sha256"]) for run in runs]
+                effective = str((mode_report.get("acceleration_selection") or {}).get("effective") or mode)
+                available = bool((mode_report.get("acceleration_selection") or {}).get("available", True))
+                mode_report.update(
+                    status="complete",
+                    effective_mode=effective,
+                    available=available,
+                    median_total_seconds=round(statistics.median(totals), 6),
+                    median_rtf=round(statistics.median(rtfs), 6) if rtfs else 0.0,
+                    peak_vram_bytes=max(int(run["peak_vram_bytes"]) for run in runs),
+                    output_hashes=hashes,
+                    reproducible_hash=len(set(hashes)) == 1,
+                    fallback_detected=effective != mode,
+                )
+            except BaseException as exc:
+                if _is_processing_interrupt(exc):
+                    raise
+                mode_report.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+            mode_reports.append(mode_report)
+        try:
+            _client(model).unload()
+        except Exception:
+            pass
+        completed = {item["requested_mode"]: item for item in mode_reports if item.get("status") == "complete"}
+        baseline = completed.get("off")
+        candidates: list[dict[str, Any]] = []
+        if baseline:
+            baseline_seconds = float(baseline["median_total_seconds"])
+            for mode in requested_modes:
+                if mode == "off" or mode not in completed:
+                    continue
+                item = completed[mode]
+                improvement = 100.0 * (
+                    baseline_seconds - float(item["median_total_seconds"])
+                ) / max(baseline_seconds, 0.000001)
+                threshold = max(
+                    float(minimum_improvement_percent),
+                    20.0 if mode in {"deepspeed", "fla_liger", "torch_compile"} else 0.0,
+                )
+                eligible = bool(
+                    item.get("available")
+                    and not item.get("fallback_detected")
+                    and improvement >= threshold
+                    and (not require_reproducible_hash or item.get("reproducible_hash"))
+                )
+                item.update(
+                    improvement_percent=round(improvement, 3),
+                    recommendation_threshold_percent=round(threshold, 3),
+                    eligible_for_recommendation=eligible,
+                )
+                if eligible:
+                    candidates.append(item)
+        recommended_mode = "off"
+        recommendation_reason = "没有候选模式达到实测提速、可用性与复现门槛，建议继续使用 off。"
+        if candidates:
+            winner = min(candidates, key=lambda item: float(item["median_total_seconds"]))
+            recommended_mode = str(winner["requested_mode"])
+            recommendation_reason = (
+                f"{recommended_mode} 相比 off 的中位总耗时实测改善 "
+                f"{float(winner['improvement_percent']):.3f}%，满足 "
+                f"{float(winner['recommendation_threshold_percent']):.3f}% 门槛。"
+            )
+        elif baseline is None:
+            recommended_mode = "none"
+            recommendation_reason = "off 基线失败，无法给出可信加速建议。"
+        recommendation = (
+            f"建议模式：{recommended_mode}\n{recommendation_reason}\n"
+            "本节点没有修改模型加载器或工作流设置；请人工把建议填回模型加载器。"
+        )
+        manifest_path = benchmark_dir / "benchmark-manifest.json"
+        report = {
+            "manifest_version": MANIFEST_VERSION,
+            "kind": "acceleration_benchmark",
+            "node_version": NODE_VERSION,
+            "model": model.to_dict(),
+            "reference_sha256": file_digest(reference),
+            "prompt_text": str(prompt_text).strip(),
+            "target_text": str(target_text).strip(),
+            "language": language,
+            "settings": config.to_dict(),
+            "requested_modes": requested_modes,
+            "warmup_runs": int(warmup_runs),
+            "measure_runs": int(measure_runs),
+            "minimum_improvement_percent": float(minimum_improvement_percent),
+            "experimental_mode_minimum_percent": 20.0,
+            "require_reproducible_hash": bool(require_reproducible_hash),
+            "recommended_mode": recommended_mode,
+            "recommendation_reason": recommendation_reason,
+            "settings_modified": False,
+            "mode_reports": mode_reports,
+            "items": output_items,
+        }
+        write_manifest(manifest_path, report)
+        batch = AudioBatch(str(manifest_path), tuple(output_items))
+        ui: dict[str, Any] = {}
+        try:
+            ui = saved_audio_files_ui(preview_paths)
+        except ValueError:
+            pass
+        return io.NodeOutput(batch, recommendation, _json(report), str(manifest_path), ui=ui)
+
+
 class T8FireRedAudioEnvironment(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -3186,6 +3833,7 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioAcousticEdit,
             T8FireRedAudioLocalRepairRange,
             T8FireRedAudioLocalRepairApply,
+            T8FireRedAudioReferenceCandidates,
             T8FireRedAudioReferenceQuality,
             T8FireRedAudioPrepareReference,
             T8FireRedAudioProjectExchange,
@@ -3198,12 +3846,14 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioSpeechQA,
             T8FireRedAudioBatchRetry,
             T8FireRedAudioAudioBatchSelect,
+            T8FireRedAudioTakeReviewBoard,
             T8FireRedAudioSaveAudioBatch,
             T8FireRedAudioProductionPackage,
             T8FireRedAudioSaveAudio,
             T8FireRedAudioSaveSubtitle,
             T8FireRedAudioRuntimeControl,
             T8FireRedAudioPerformanceReport,
+            T8FireRedAudioAccelerationBenchmark,
             T8FireRedAudioEnvironment,
         ]
 
