@@ -1,6 +1,6 @@
 # comfyui-fireredaudio-T8
 
-FireRedAudio 的 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点菜单：
+FireRedAudio 的 24 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点菜单：
 
 `T8star-Aix / Audio / FireRedAudio`
 
@@ -15,6 +15,7 @@ FireRedAudio 的 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点
 - 语义语音编辑
 - 严格模板和参数化两种音高、速度、音量声学编辑
 - 参考音频时长、响度、削波、静音、直流偏移质检
+- 另存 24 kHz 单声道的非破坏参考音频清理副本，可选静音裁剪、-23 LUFS 和语音高通，保留前后质检与处理记录
 - 可复用音色档案与 1–8 角色音色库
 - 载入桌面整合包导出的项目交换 JSON，复用音色库、脚本和 adopted take
 - SRT、`角色：台词`、带时间码角色脚本和 JSON 的解析与生成前预检
@@ -61,6 +62,8 @@ python scripts/setup_runtime.py
 
 加速模式默认 `auto_safe`，使用预编译 FlashAttention 2 wheel。DeepSpeed BF16 已通过单卡完整 TTS，但仍是手动实验模式；FLA+Liger 在没有可审计 `causal-conv1d` Windows wheel 时会明确显示部分 PyTorch 回退。安装器从固定 URL 下载预编译 wheel、校验 SHA-256 和 Python/Torch/CUDA ABI，不从源码编译，也不修改 ComfyUI 宿主环境。
 
+普通单卡优先使用 `auto_safe`；`off` 用作 SDPA 对照与排障；DeepSpeed、FLA+Liger 和 Torch Compile 只有在相同真实工作流的暖机多轮中位数证明更快时才建议手动选择。当前不启用多卡。
+
 ## 模型
 
 默认扫描：
@@ -88,7 +91,7 @@ python scripts/download_models.py --target "D:\ComfyUI\models\TTS\FireRedAudio" 
 3. 可选连接 `FireRedAudio 生成参数`。
 4. TTS 输出连接 `FireRedAudio 保存音频`，可选择 WAV/FLAC/MP3/OGG。
 
-示例见 `example_workflows/ui` 和 `example_workflows/api`。
+示例见 `example_workflows/ui` 和 `example_workflows/api`，其中 `15_reference_cleanup` 演示参考音频质检后再生成不覆盖源文件的清理副本。该节点不会执行降噪、去混响或削波伪修复。
 
 长音频字幕是静音感知的分段级近似时间，不是词级强制对齐。上游生成目前仅支持单样本，批量工作流应顺序执行，不能视为原生 GPU batch。
 

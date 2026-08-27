@@ -14,6 +14,7 @@
 - `12_subtitle_export`：长音频转写后直接保存 WebVTT，可切换 SRT/TXT/JSONL
 - `13_role_dubbing_pipeline`：双角色音色库、角色脚本预检、可恢复批配音、时间线混音与成品 QA
 - `14_srt_dubbing_pipeline`：SRT 角色绑定、严格预检、可恢复配音与按字幕时间码渲染
+- `15_reference_cleanup`：先质检，再生成不覆盖原文件的 24 kHz 单声道参考清理副本
 
 `ui` 目录可直接拖入 ComfyUI；`api` 目录用于 `/prompt` API。请先把示例引用的 `voice_reference.wav`、`comparison.wav`、`long_recording.wav`、`narrator_reference.wav` 或 `actor_reference.wav` 上传到 ComfyUI input，并按实际扫描结果修改模型加载器中的模型名称。
 

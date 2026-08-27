@@ -62,7 +62,7 @@ def model_node(output_links: list[int]) -> dict[str, Any]:
         1,
         "T8_FireRedAudio_ModelLoader",
         [60, 80],
-        ["FireRedAudio", "", "auto", "auto", "full", "managed", "", "", "", False, False],
+        ["FireRedAudio", "", "auto", "auto", "auto_safe", "full", "managed", "", "", "", False, False],
         [],
         [out("model", "T8_FIREREDAUDIO_MODEL", output_links), out("model_info", "STRING")],
         [370, 330],
@@ -123,6 +123,19 @@ def build() -> None:
     quality = node(3, "T8_FireRedAudio_ReferenceQuality", [500, 220], [], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("audio", "AUDIO", 2)], [out("audio", "AUDIO"), out("quality_report", "STRING")], [390, 180])
     save("ui_09_reference_audio_quality", workflow([model_node([1]), load_audio, quality], [[1, 1, 0, 3, 0, "T8_FIREREDAUDIO_MODEL"], [2, 2, 0, 3, 1, "AUDIO"]]))
     save("api_09_reference_audio_quality", {"1": {"class_type": "T8_FireRedAudio_ModelLoader", "inputs": {"model_name": "FireRedAudio", "custom_model_path": "", "device": "auto", "memory_mode": "auto", "acceleration_mode": "auto_safe", "profile": "lite", "worker_mode": "managed", "runtime_python": "", "worker_url": "", "worker_token": "", "verify_hashes": False, "release_after_run": False}}, "2": {"class_type": "LoadAudio", "inputs": {"audio": "voice_reference.wav"}}, "3": {"class_type": "T8_FireRedAudio_ReferenceQuality", "inputs": {"model": ["1", 0], "audio": ["2", 0]}}})
+
+    cleanup_audio = node(2, "LoadAudio", [60, 450], ["voice_reference.wav", None, None], [], [out("AUDIO", "AUDIO", [3])], [300, 170])
+    cleanup_quality = node(3, "T8_FireRedAudio_ReferenceQuality", [430, 180], [], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("audio", "AUDIO", 3)], [out("audio", "AUDIO", [4]), out("quality_report", "STRING")], [390, 180])
+    cleanup = node(4, "T8_FireRedAudio_PrepareReference", [850, 210], [True, False, True], [port("model", "T8_FIREREDAUDIO_MODEL", 2), port("audio", "AUDIO", 4)], [out("clean_audio", "AUDIO", [5]), out("cleanup_report", "STRING"), out("output_path", "STRING")], [410, 250])
+    cleanup_save = node(5, "SaveAudio", [1320, 230], ["fireredaudio/reference-clean"], [port("audio", "AUDIO", 5)], [out("audio", "AUDIO")], [300, 120])
+    save("ui_15_reference_cleanup", workflow([model_node([1, 2]), cleanup_audio, cleanup_quality, cleanup, cleanup_save], [[1, 1, 0, 3, 0, "T8_FIREREDAUDIO_MODEL"], [2, 1, 0, 4, 0, "T8_FIREREDAUDIO_MODEL"], [3, 2, 0, 3, 1, "AUDIO"], [4, 3, 0, 4, 1, "AUDIO"], [5, 4, 0, 5, 0, "AUDIO"]]))
+    save("api_15_reference_cleanup", {
+        "1": {"class_type": "T8_FireRedAudio_ModelLoader", "inputs": {"model_name": "FireRedAudio", "custom_model_path": "", "device": "auto", "memory_mode": "auto", "acceleration_mode": "auto_safe", "profile": "lite", "worker_mode": "managed", "runtime_python": "", "worker_url": "", "worker_token": "", "verify_hashes": False, "release_after_run": False}},
+        "2": {"class_type": "LoadAudio", "inputs": {"audio": "voice_reference.wav"}},
+        "3": {"class_type": "T8_FireRedAudio_ReferenceQuality", "inputs": {"model": ["1", 0], "audio": ["2", 0]}},
+        "4": {"class_type": "T8_FireRedAudio_PrepareReference", "inputs": {"model": ["1", 0], "audio": ["3", 0], "trim_silence": True, "normalize_loudness": False, "speech_highpass": True}},
+        "5": {"class_type": "SaveAudio", "inputs": {"audio": ["4", 0], "filename_prefix": "fireredaudio/reference-clean"}},
+    })
 
     compare_audio = node(3, "LoadAudio", [60, 650], ["comparison.wav", None, None], [], [out("AUDIO", "AUDIO", [3])], [300, 170])
     multi = node(4, "T8_FireRedAudio_MultiUnderstand", [520, 260], ["Compare these recordings and explain the relevant similarities and differences.", True, 1536], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("audio_0", "AUDIO", 2), port("audio_1", "AUDIO", 3)], [out("answer", "STRING"), out("reasoning", "STRING"), out("report", "STRING")], [430, 320])

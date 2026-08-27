@@ -288,6 +288,26 @@ def handle_project_request(
             "clip": store.upsert_timeline_clip(_mapping(payload.get("clip"))),
             "project": store.snapshot(),
         }
+    if path == "/v1/project/timeline/upsert-batch":
+        clips = payload.get("clips")
+        if not isinstance(clips, list):
+            raise WorkerProtocolError("clips 必须是数组")
+        return {
+            "clips": store.upsert_timeline_clips(
+                [_mapping(value) for value in clips]
+            ),
+            "project": store.snapshot(),
+        }
+    if path == "/v1/project/timeline/delete":
+        clip_ids = payload.get("clip_ids")
+        if not isinstance(clip_ids, list):
+            raise WorkerProtocolError("clip_ids 必须是数组")
+        deleted = store.delete_timeline_clips([str(value) for value in clip_ids])
+        return {
+            "deleted": deleted,
+            "count": len(deleted),
+            "project": store.snapshot(),
+        }
     if path == "/v1/project/markers/list":
         return {"markers": store.list_markers(), "project": store.snapshot()}
     if path == "/v1/project/markers/upsert":

@@ -67,6 +67,29 @@ class WorkerClient:
             "v1/audio/analyze", {"audio_path": audio_path}, timeout=120.0
         )
 
+    def prepare_reference(
+        self,
+        audio_path: str,
+        output_path: str,
+        *,
+        trim_silence: bool = True,
+        normalize_loudness: bool = False,
+        target_lufs: float = -23.0,
+        highpass_hz: float | None = 60.0,
+    ) -> dict[str, Any]:
+        return self.request(
+            "v1/audio/prepare-reference",
+            {
+                "audio_path": audio_path,
+                "output_path": output_path,
+                "trim_silence": trim_silence,
+                "normalize_loudness": normalize_loudness,
+                "target_lufs": target_lufs,
+                "highpass_hz": highpass_hz,
+            },
+            timeout=600.0,
+        )
+
     def cache_status(self) -> dict[str, Any]:
         return self.request("v1/cache/status", {}, timeout=30.0)
 

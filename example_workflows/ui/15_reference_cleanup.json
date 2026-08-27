@@ -1,6 +1,6 @@
 {
-  "last_node_id": 4,
-  "last_link_id": 3,
+  "last_node_id": 5,
+  "last_link_id": 5,
   "nodes": [
     {
       "id": 1,
@@ -22,7 +22,8 @@
           "name": "model",
           "type": "T8_FIREREDAUDIO_MODEL",
           "links": [
-            1
+            1,
+            2
           ],
           "slot_index": 0
         },
@@ -71,7 +72,7 @@
           "name": "AUDIO",
           "type": "AUDIO",
           "links": [
-            2
+            3
           ],
           "slot_index": 0
         }
@@ -87,51 +88,17 @@
     },
     {
       "id": 3,
-      "type": "LoadAudio",
+      "type": "T8_FireRedAudio_ReferenceQuality",
       "pos": [
-        60,
-        650
+        430,
+        180
       ],
       "size": [
-        300,
-        170
+        390,
+        180
       ],
       "flags": {},
       "order": 2,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "AUDIO",
-          "type": "AUDIO",
-          "links": [
-            3
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadAudio"
-      },
-      "widgets_values": [
-        "comparison.wav",
-        null,
-        null
-      ]
-    },
-    {
-      "id": 4,
-      "type": "T8_FireRedAudio_MultiUnderstand",
-      "pos": [
-        520,
-        260
-      ],
-      "size": [
-        430,
-        320
-      ],
-      "flags": {},
-      "order": 3,
       "mode": 0,
       "inputs": [
         {
@@ -140,43 +107,123 @@
           "link": 1
         },
         {
-          "name": "audio_0",
-          "type": "AUDIO",
-          "link": 2
-        },
-        {
-          "name": "audio_1",
+          "name": "audio",
           "type": "AUDIO",
           "link": 3
         }
       ],
       "outputs": [
         {
-          "name": "answer",
-          "type": "STRING",
-          "links": [],
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            4
+          ],
           "slot_index": 0
         },
         {
-          "name": "reasoning",
-          "type": "STRING",
-          "links": [],
-          "slot_index": 0
-        },
-        {
-          "name": "report",
+          "name": "quality_report",
           "type": "STRING",
           "links": [],
           "slot_index": 0
         }
       ],
       "properties": {
-        "Node name for S&R": "T8_FireRedAudio_MultiUnderstand"
+        "Node name for S&R": "T8_FireRedAudio_ReferenceQuality"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "T8_FireRedAudio_PrepareReference",
+      "pos": [
+        850,
+        210
+      ],
+      "size": [
+        410,
+        250
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "T8_FIREREDAUDIO_MODEL",
+          "link": 2
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "clean_audio",
+          "type": "AUDIO",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "cleanup_report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "output_path",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_PrepareReference"
       },
       "widgets_values": [
-        "Compare these recordings and explain the relevant similarities and differences.",
         true,
-        1536
+        false,
+        true
+      ]
+    },
+    {
+      "id": 5,
+      "type": "SaveAudio",
+      "pos": [
+        1320,
+        230
+      ],
+      "size": [
+        300,
+        120
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveAudio"
+      },
+      "widgets_values": [
+        "fireredaudio/reference-clean"
       ]
     }
   ],
@@ -185,24 +232,40 @@
       1,
       1,
       0,
-      4,
+      3,
       0,
       "T8_FIREREDAUDIO_MODEL"
     ],
     [
       2,
+      1,
+      0,
+      4,
+      0,
+      "T8_FIREREDAUDIO_MODEL"
+    ],
+    [
+      3,
       2,
+      0,
+      3,
+      1,
+      "AUDIO"
+    ],
+    [
+      4,
+      3,
       0,
       4,
       1,
       "AUDIO"
     ],
     [
-      3,
-      3,
-      0,
+      5,
       4,
-      2,
+      0,
+      5,
+      0,
       "AUDIO"
     ]
   ],

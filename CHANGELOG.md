@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+- 新增“参考音频非破坏清理”节点与第 15 组 UI/API 示例工作流；清理副本不会覆盖源文件，并保留处理前后质检与完整参数记录。
+- 修正所有 UI 示例的模型加载器控件序列，确保默认加速模式实际为 `auto_safe`，并增加全量工作流回归测试。
+- Worker 同步桌面时间线批量保存/删除 API、参考音频清理端点和 50 句队列恢复验证。
+- 环境报告统一为 Python 3.10、Torch/Torchaudio 2.8.0+cu128、Transformers 5.8，继续使用预编译 FlashAttention/DeepSpeed Windows wheel，禁止源码编译。
+- 节点总数增至 24；多卡仍不启用。
+
 ## 0.5.0
 
 - 隔离运行时对齐 Python 3.10、Torch/Torchaudio 2.8.0+cu128、Transformers 5.8。

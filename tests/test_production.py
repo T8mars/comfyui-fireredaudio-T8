@@ -241,6 +241,49 @@ class ExampleWorkflowTests(unittest.TestCase):
             bank_node = next(node for node in api.values() if node["class_type"] == "T8_FireRedAudio_VoiceBank")
             self.assertTrue(any(key.startswith("profiles.profile_") for key in bank_node["inputs"]), name)
 
+    def test_reference_cleanup_example_is_linked_and_non_destructive(self) -> None:
+        name = "15_reference_cleanup"
+        ui = json.loads(
+            (ROOT / "example_workflows" / "ui" / f"{name}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        api = json.loads(
+            (ROOT / "example_workflows" / "api" / f"{name}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        node_ids = {node["id"] for node in ui["nodes"]}
+        self.assertEqual(len(node_ids), len(ui["nodes"]))
+        for _link_id, source, _slot, target, _target_slot, _kind in ui["links"]:
+            self.assertIn(source, node_ids)
+            self.assertIn(target, node_ids)
+        quality_id = next(
+            node_id
+            for node_id, value in api.items()
+            if value["class_type"] == "T8_FireRedAudio_ReferenceQuality"
+        )
+        cleanup_id = next(
+            node_id
+            for node_id, value in api.items()
+            if value["class_type"] == "T8_FireRedAudio_PrepareReference"
+        )
+        self.assertEqual(api[cleanup_id]["inputs"]["audio"], [quality_id, 0])
+        self.assertTrue(api[cleanup_id]["inputs"]["trim_silence"])
+        self.assertFalse(api[cleanup_id]["inputs"]["normalize_loudness"])
+
+    def test_all_ui_examples_keep_auto_safe_in_model_loader_widget(self) -> None:
+        for path in sorted((ROOT / "example_workflows" / "ui").glob("*.json")):
+            ui = json.loads(path.read_text(encoding="utf-8"))
+            loaders = [
+                node
+                for node in ui["nodes"]
+                if node["type"] == "T8_FireRedAudio_ModelLoader"
+            ]
+            for loader in loaders:
+                self.assertGreaterEqual(len(loader["widgets_values"]), 5, path.name)
+                self.assertEqual(loader["widgets_values"][4], "auto_safe", path.name)
+
 
 if __name__ == "__main__":
     unittest.main()

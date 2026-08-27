@@ -53,6 +53,21 @@ def analyze_audio(value: str | Path) -> dict[str, Any]:
     if channels > 2:
         issues.append("输入超过双声道，建议先转换为单声道或双声道")
 
+    suggested_actions: list[str] = []
+    if silence_ratio > 0.5:
+        suggested_actions.append("可生成非破坏式清理副本，自动裁掉首尾长静音")
+    if dc_ratio > 0.01:
+        suggested_actions.append("可生成清理副本，通过语音安全高通减轻直流偏移")
+    if channels != 1 or sample_rate != 24000:
+        suggested_actions.append("可生成 24 kHz 单声道 PCM16 标准副本")
+    if clipping_ratio > 0.001:
+        suggested_actions.append("削波无法可靠还原，优先更换未削波的原始录音")
+    if duration < 1.0:
+        suggested_actions.append("补录至少 1 秒，推荐使用 3–15 秒连续干净语音")
+    elif duration > 30.0:
+        suggested_actions.append("人工选取 3–15 秒最清晰、内容与逐字稿一致的片段")
+    suggested_actions.append("清理副本不执行降噪或去混响；存在背景声时应优先更换素材")
+
     return {
         "source_path": str(Path(value).expanduser().resolve()),
         "prepared_path": str(prepared),
@@ -68,6 +83,8 @@ def analyze_audio(value: str | Path) -> dict[str, Any]:
         "dc_offset_ratio": round(dc_ratio, 6),
         "issues": issues,
         "recommended": not issues,
+        "suggested_actions": suggested_actions,
+        "automatic_cleanup_available": True,
     }
 
 

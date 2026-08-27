@@ -16,8 +16,8 @@ from fireredaudio_t8.model_manager import validate_model_dir
 
 
 EXPECTED = {
-    "torch": "2.11.0",
-    "torchaudio": "2.11.0",
+    "torch": "2.8.0",
+    "torchaudio": "2.8.0",
     "transformers": "5.8.0",
     "numpy": "2.2.6",
     "einops": "0.8.2",

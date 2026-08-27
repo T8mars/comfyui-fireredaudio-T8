@@ -911,50 +911,79 @@ class ProjectStore:
         return changed
 
     def upsert_timeline_clip(self, value: dict[str, Any]) -> dict[str, Any]:
-        clip_id = str(value.get("id") or uuid.uuid4())
-        line_id = str(value.get("line_id") or "")
-        take_id = str(value.get("take_id") or "")
-        if not line_id or not take_id:
-            raise WorkerProtocolError("时间轴片段缺少 line_id/take_id")
-        now = utc_now()
-        fields = (
-            clip_id,
-            line_id,
-            take_id,
-            str(value.get("track") or "dialogue")[:80],
-            max(0.0, float(value.get("position") or 0.0)),
-            max(0.0, float(value.get("duration") or 0.0)),
-            max(0.0, float(value.get("in_offset") or 0.0)),
-            max(0.0, float(value.get("out_offset") or 0.0)),
-            float(value.get("gain_db") or 0.0),
-            max(0.0, float(value.get("fade_in") or 0.0)),
-            max(0.0, float(value.get("fade_out") or 0.0)),
-            1 if value.get("muted") else 0,
-            int(value.get("version") or 1),
-            now,
-        )
+        return self.upsert_timeline_clips([value])[0]
+
+    def upsert_timeline_clips(
+        self, values: Iterable[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Atomically insert/update a bounded group of non-destructive timeline edits."""
+        items = [dict(value) for value in values]
+        if not items:
+            raise WorkerProtocolError("没有可保存的时间线片段")
+        if len(items) > 500:
+            raise WorkerProtocolError("单次最多保存 500 个时间线片段")
+        normalized = [_timeline_clip_fields(value) for value in items]
+        results: list[dict[str, Any]] = []
         with self.connection() as connection:
+            for fields in normalized:
+                connection.execute(
+                    """
+                    INSERT INTO timeline_clips(
+                        id,line_id,take_id,track,position,duration,in_offset,out_offset,
+                        gain_db,fade_in,fade_out,muted,version,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        line_id=excluded.line_id,take_id=excluded.take_id,track=excluded.track,
+                        position=excluded.position,duration=excluded.duration,
+                        in_offset=excluded.in_offset,out_offset=excluded.out_offset,
+                        gain_db=excluded.gain_db,fade_in=excluded.fade_in,
+                        fade_out=excluded.fade_out,muted=excluded.muted,
+                        version=timeline_clips.version+1,updated_at=excluded.updated_at
+                    """,
+                    fields,
+                )
+                row = connection.execute(
+                    "SELECT * FROM timeline_clips WHERE id=?", (fields[0],)
+                ).fetchone()
+                if row is None:
+                    raise WorkerProtocolError(f"时间轴片段保存失败：{fields[0]}")
+                results.append(dict(row))
+        self._touch(
+            "timeline_clip",
+            None if len(results) > 1 else str(results[0]["id"]),
+            "batch_upserted" if len(results) > 1 else "upserted",
+            {"count": len(results), "ids": [str(value["id"]) for value in results]},
+        )
+        return results
+
+    def delete_timeline_clips(self, clip_ids: Iterable[str]) -> list[dict[str, Any]]:
+        ids = list(dict.fromkeys(str(value).strip() for value in clip_ids if str(value).strip()))
+        if not ids:
+            raise WorkerProtocolError("没有选择要删除的时间线片段")
+        if len(ids) > 500:
+            raise WorkerProtocolError("单次最多删除 500 个时间线片段")
+        placeholders = ",".join("?" for _ in ids)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM timeline_clips WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            found = {str(row["id"]) for row in rows}
+            missing = [clip_id for clip_id in ids if clip_id not in found]
+            if missing:
+                raise WorkerProtocolError(f"时间轴片段不存在：{', '.join(missing[:5])}")
             connection.execute(
-                """
-                INSERT INTO timeline_clips(
-                    id,line_id,take_id,track,position,duration,in_offset,out_offset,
-                    gain_db,fade_in,fade_out,muted,version,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET
-                    line_id=excluded.line_id,take_id=excluded.take_id,track=excluded.track,
-                    position=excluded.position,duration=excluded.duration,
-                    in_offset=excluded.in_offset,out_offset=excluded.out_offset,
-                    gain_db=excluded.gain_db,fade_in=excluded.fade_in,
-                    fade_out=excluded.fade_out,muted=excluded.muted,
-                    version=timeline_clips.version+1,updated_at=excluded.updated_at
-                """,
-                fields,
+                f"DELETE FROM timeline_clips WHERE id IN ({placeholders})",
+                ids,
             )
-            row = connection.execute(
-                "SELECT * FROM timeline_clips WHERE id=?", (clip_id,)
-            ).fetchone()
-        self._touch("timeline_clip", clip_id, "upserted", {"line_id": line_id})
-        return dict(row)
+        deleted = [dict(row) for row in rows]
+        self._touch(
+            "timeline_clip",
+            None if len(deleted) > 1 else str(deleted[0]["id"]),
+            "batch_deleted" if len(deleted) > 1 else "deleted",
+            {"count": len(deleted), "ids": ids},
+        )
+        return deleted
 
     def list_timeline_clips(self) -> list[dict[str, Any]]:
         with self.connection() as connection:
@@ -1406,6 +1435,39 @@ def _asset_dict(row: sqlite3.Row) -> dict[str, Any]:
     result["external"] = bool(result["external"])
     result["metadata"] = _read_json(result.pop("metadata_json"), {})
     return result
+
+
+def _timeline_clip_fields(value: dict[str, Any]) -> tuple[Any, ...]:
+    clip_id = str(value.get("id") or uuid.uuid4())
+    line_id = str(value.get("line_id") or "").strip()
+    take_id = str(value.get("take_id") or "").strip()
+    if not line_id or not take_id:
+        raise WorkerProtocolError("时间轴片段缺少 line_id/take_id")
+    duration = max(0.0, float(value.get("duration") or 0.0))
+    in_offset = max(0.0, float(value.get("in_offset") or 0.0))
+    out_offset = max(0.0, float(value.get("out_offset") or 0.0))
+    if out_offset and out_offset <= in_offset:
+        raise WorkerProtocolError("时间轴片段的裁剪终点必须大于起点")
+    if duration and in_offset >= duration:
+        raise WorkerProtocolError("时间轴片段的裁剪起点超出音频时长")
+    if duration and out_offset > duration + 0.001:
+        raise WorkerProtocolError("时间轴片段的裁剪终点超出音频时长")
+    return (
+        clip_id,
+        line_id,
+        take_id,
+        str(value.get("track") or "dialogue")[:80],
+        max(0.0, float(value.get("position") or 0.0)),
+        duration,
+        in_offset,
+        out_offset,
+        float(value.get("gain_db") or 0.0),
+        max(0.0, float(value.get("fade_in") or 0.0)),
+        max(0.0, float(value.get("fade_out") or 0.0)),
+        1 if value.get("muted") else 0,
+        int(value.get("version") or 1),
+        utc_now(),
+    )
 
 
 def _voice_dict(row: sqlite3.Row) -> dict[str, Any]:

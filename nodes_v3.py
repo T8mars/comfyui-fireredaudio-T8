@@ -7,7 +7,6 @@ import platform
 import shutil
 import sys
 import threading
-import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -38,7 +37,6 @@ from .runtime.production import (
     AudioBatch,
     ScriptPlan,
     VoiceBank,
-    VoiceProfile,
     can_reuse_manifest_item,
     create_voice_bank,
     create_voice_profile,
@@ -706,6 +704,58 @@ class T8FireRedAudioReferenceQuality(io.ComfyNode):
         return io.NodeOutput(audio, _json(result))
 
 
+class T8FireRedAudioPrepareReference(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_PrepareReference",
+            display_name="FireRedAudio 参考音频清理副本 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "非破坏式生成 24 kHz 单声道参考副本，可裁首尾静音并规范响度。"
+                "不会覆盖原音频，也不会执行可能改变音色的降噪、去混响或削波伪修复。"
+            ),
+            inputs=[
+                ModelType.Input("model"),
+                io.Audio.Input("audio", display_name="参考音频"),
+                io.Boolean.Input("trim_silence", display_name="裁首尾静音", default=True),
+                io.Boolean.Input("normalize_loudness", display_name="规范到 -23 LUFS", default=False),
+                io.Boolean.Input("speech_highpass", display_name="60 Hz 语音高通", default=True),
+            ],
+            outputs=[
+                io.Audio.Output("clean_audio", display_name="清理副本"),
+                io.String.Output("cleanup_report", display_name="清理报告 JSON"),
+                io.String.Output("output_path", display_name="副本路径"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model: RuntimeHandle,
+        audio: dict,
+        trim_silence: bool,
+        normalize_loudness: bool,
+        speech_highpass: bool,
+    ) -> io.NodeOutput:
+        source = audio_to_wav(audio, "reference-clean-source")
+        output = output_wav_path("reference-clean")
+        result = _client(model).prepare_reference(
+            str(source),
+            str(output),
+            trim_silence=trim_silence,
+            normalize_loudness=normalize_loudness,
+            target_lufs=-23.0,
+            highpass_hz=60.0 if speech_highpass else None,
+        )
+        return io.NodeOutput(
+            wav_to_audio(result["output_path"]),
+            _json(result),
+            str(result["output_path"]),
+        )
+
+
 class T8FireRedAudioProjectExchange(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -1366,7 +1416,7 @@ class T8FireRedAudioEnvironment(io.ComfyNode):
             "platform": platform.platform(),
             "host_packages": packages,
             "node_host_dependencies": [],
-            "isolated_worker_required": {"python": "3.10.x", "torch": "2.11.0+cu128", "transformers": "5.8.0"},
+            "isolated_worker_required": {"python": "3.10.x", "torch": "2.8.0+cu128", "transformers": "5.8.0"},
             "manager": WORKER_MANAGER.status(),
         }))
 
@@ -1390,6 +1440,7 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioSpeechEdit,
             T8FireRedAudioAcousticEdit,
             T8FireRedAudioReferenceQuality,
+            T8FireRedAudioPrepareReference,
             T8FireRedAudioProjectExchange,
             T8FireRedAudioVoiceProfile,
             T8FireRedAudioVoiceBank,

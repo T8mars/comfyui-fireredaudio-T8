@@ -17,6 +17,7 @@ from .errors import FireRedAudioT8Error, TaskCancelledError
 from .model_manager import validate_model_dir
 from .runtime import FireRedAudioRuntime
 from .audio_quality import analyze_audio
+from .audio_post import prepare_reference_audio
 from .production_quality import analyze_production_audio, text_diff_metrics
 from .system_info import runtime_readiness
 
@@ -80,6 +81,19 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                 result = runtime_readiness()
             elif route == "/v1/audio/analyze":
                 result = analyze_audio(payload["audio_path"])
+            elif route == "/v1/audio/prepare-reference":
+                result = prepare_reference_audio(
+                    payload["audio_path"],
+                    payload["output_path"],
+                    trim_silence=bool(payload.get("trim_silence", True)),
+                    normalize_loudness=bool(payload.get("normalize_loudness", False)),
+                    target_lufs=float(payload.get("target_lufs", -23.0)),
+                    highpass_hz=(
+                        None
+                        if payload.get("highpass_hz") in (None, "", 0, 0.0)
+                        else float(payload["highpass_hz"])
+                    ),
+                )
             elif route == "/v1/audio/production-qa":
                 result = analyze_production_audio(
                     payload["audio_path"],
