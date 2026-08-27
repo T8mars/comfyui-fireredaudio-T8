@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+- 隔离运行时对齐 Python 3.10、Torch/Torchaudio 2.8.0+cu128、Transformers 5.8。
+- 内置经哈希和 ABI 校验的 FlashAttention 2.8.3、DeepSpeed 0.17.5、Triton-Windows、FLA 与 Liger；禁止从源码构建 FlashAttention/DeepSpeed。
+- 模型加载器新增自动安全、FlashAttention、DeepSpeed BF16、FLA+Liger 与 SDPA 基线选择，失败原因可诊断并安全回退。
+- DeepSpeed、FlashAttention、FLA/Liger 均通过真实 FireRedAudio 短 TTS；DeepSpeed 单卡尚未证明性能收益，保持手动实验。
+- 同步桌面项目的音色双向同步、时间线拖动和撤销/重做交换数据。
+
 ## 0.4.0
 
 - 新增音色档案、1–8 音色库，以及 SRT/角色脚本/JSON 解析预检节点。

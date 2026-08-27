@@ -1,8 +1,16 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
-torch==2.11.0
-torchaudio==2.11.0
+torch==2.8.0
+torchaudio==2.8.0
 torchcodec==0.11.1; sys_platform != "win32"
 transformers==5.8.0
 numpy==2.2.6
 einops==0.8.2
 tqdm==4.67.3
+hjson==3.1.0; sys_platform == "win32"
+ninja==1.13.0; sys_platform == "win32"
+nvidia-ml-py==13.610.43; sys_platform == "win32"
+py-cpuinfo==9.0.0; sys_platform == "win32"
+msgpack==1.1.1; sys_platform == "win32"
+psutil==7.0.0; sys_platform == "win32"
+pydantic==2.11.9; sys_platform == "win32"
+setuptools==80.9.0; sys_platform == "win32"

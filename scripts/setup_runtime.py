@@ -27,6 +27,16 @@ def main() -> int:
     run([uv, "venv", "--python", "3.10", str(venv)])
     python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     run([uv, "pip", "install", "--python", str(python), "-r", str(node_root / "runtime-requirements.txt")])
+    if os.name == "nt":
+        run(
+            [
+                str(python),
+                str(node_root / "scripts" / "install_acceleration_wheels.py"),
+                "--uv",
+                uv,
+            ]
+        )
+        run([str(python), str(node_root / "scripts" / "check_acceleration.py")])
     check = subprocess.run(
         [str(python), "-c", "import torch, transformers; print(torch.__version__, transformers.__version__)"],
         check=True,

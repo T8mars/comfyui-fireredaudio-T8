@@ -28,6 +28,7 @@ from .long_audio import (
 from .model_manager import model_paths, normalize_model_root, profile_for_task, validate_model_dir
 from .presets import apply_quality_preset
 from .system_info import gpu_inventory
+from fireredaudio.acceleration import probe_acceleration, resolve_acceleration
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class RuntimeState:
     device: str | None = None
     decoder_loaded: bool = False
     memory_mode: str | None = None
+    acceleration_mode: str | None = None
     loading: bool = False
     active_task: str | None = None
     active_task_id: str | None = None
@@ -93,8 +95,19 @@ class FireRedAudioRuntime:
                 "flash-attn",
                 "flash-linear-attention",
                 "liger-kernel",
+                "triton-windows",
+                "deepspeed",
             )
         }
+        requested_acceleration = data.get("acceleration_mode") or "auto_safe"
+        capabilities = probe_acceleration(data.get("device") or None)
+        selection = (
+            dict(getattr(self._engine, "acceleration", {}) or {})
+            if self._engine is not None
+            else resolve_acceleration(
+                requested_acceleration, data.get("device") or None, capabilities
+            ).to_dict()
+        )
         data.update(
             {
                 "runtime_version": RUNTIME_VERSION,
@@ -102,16 +115,24 @@ class FireRedAudioRuntime:
                 "model_revision": MODEL_REVISION,
                 "packages": packages,
                 "acceleration": {
-                    "attention_backend": (
-                        "flash_attention_2" if packages["flash-attn"] else "sdpa"
+                    "selection": selection,
+                    "attention_backend": selection.get("attention_backend", "sdpa"),
+                    "flash_linear_attention": bool(selection.get("use_fla")),
+                    "fla_full_fast_path": bool(
+                        capabilities["modules"].get("fla")
+                        and capabilities["modules"].get("causal_conv1d")
                     ),
-                    "flash_linear_attention": bool(packages["flash-linear-attention"]),
-                    "liger_kernel": bool(packages["liger-kernel"]),
+                    "liger_kernel": bool(selection.get("use_liger")),
+                    "torch_compile": bool(selection.get("use_torch_compile")),
                     "latent_first_batch": True,
                     "deepspeed": {
-                        "supported": False,
-                        "reason": "当前单卡推理不使用 DeepSpeed；它不会减少 sequential 主模型/解码器换卡瓶颈。",
+                        "installed": bool(packages["deepspeed"]),
+                        "supported": bool(packages["deepspeed"]),
+                        "enabled": bool(selection.get("use_deepspeed")),
+                        "single_gpu_only": True,
+                        "reason": selection.get("reason", ""),
                     },
+                    "capabilities": capabilities,
                     "transformers_isolation": {
                         "worker_version": packages["transformers"],
                         "host_independent": True,
@@ -221,6 +242,7 @@ class FireRedAudioRuntime:
         device: str,
         require_decoder: bool,
         memory_mode: str = "auto",
+        acceleration_mode: str = "auto_safe",
     ) -> None:
         root = normalize_model_root(model_root)
         profile = "full" if require_decoder else "lite"
@@ -234,6 +256,7 @@ class FireRedAudioRuntime:
             self._engine is not None
             and self._state.model_root == requested_root
             and self._state.device == device
+            and self._state.acceleration_mode == acceleration_mode
             and (
                 self._state.memory_mode == resolved_memory_mode
                 or (not require_decoder and self._state.decoder_loaded)
@@ -253,6 +276,7 @@ class FireRedAudioRuntime:
                 vae_decoder_path=str(decoder) if require_decoder else None,
                 device=device,
                 memory_mode=resolved_memory_mode,
+                acceleration_mode=acceleration_mode,
             )
             self._update_state(
                 loaded=True,
@@ -260,6 +284,7 @@ class FireRedAudioRuntime:
                 device=device,
                 decoder_loaded=require_decoder,
                 memory_mode=resolved_memory_mode,
+                acceleration_mode=acceleration_mode,
             )
         except Exception as exc:
             self._update_state(last_error=str(exc))
@@ -275,9 +300,16 @@ class FireRedAudioRuntime:
         device: str = "auto",
         profile: str = "full",
         memory_mode: str = "auto",
+        acceleration_mode: str = "auto_safe",
     ) -> dict[str, Any]:
         with self._lock:
-            self._load(model_root, _resolve_device(device), profile == "full", memory_mode)
+            self._load(
+                model_root,
+                _resolve_device(device),
+                profile == "full",
+                memory_mode,
+                acceleration_mode,
+            )
             return self.status()
 
     def unload(self) -> dict[str, Any]:
@@ -343,6 +375,7 @@ class FireRedAudioRuntime:
             raise WorkerProtocolError("缺少 model_root")
         device = _resolve_device(str(request.get("device") or "auto"))
         memory_mode = str(request.get("memory_mode") or "auto")
+        acceleration_mode = str(request.get("acceleration_mode") or "auto_safe")
         release_after = bool(request.get("release_after", False))
         task_id = str(request.get("task_id") or uuid.uuid4())
         started = time.perf_counter()
@@ -366,6 +399,7 @@ class FireRedAudioRuntime:
                     device,
                     profile_for_task(task) == "full",
                     memory_mode,
+                    acceleration_mode,
                 )
                 cold_start = engine_before is None or engine_before is not self._engine
                 self._update_state(cold_start=cold_start)
@@ -392,6 +426,7 @@ class FireRedAudioRuntime:
                     cold_start=cold_start,
                     device=device,
                     memory_mode=self._state.memory_mode,
+                    acceleration_mode=self._state.acceleration_mode,
                     output_duration_seconds=result.get("duration_seconds"),
                 )
                 if result.get("metadata_path"):
@@ -431,6 +466,7 @@ class FireRedAudioRuntime:
             raise WorkerProtocolError("批量 TTS 缺少 model_root")
         device = _resolve_device(str(first.get("device") or "auto"))
         memory_mode = str(first.get("memory_mode") or "auto")
+        acceleration_mode = str(first.get("acceleration_mode") or "auto_safe")
         for request in normalized[1:]:
             if str(request.get("model_root") or "") != str(model_root):
                 raise WorkerProtocolError("同一批次必须使用相同模型目录")
@@ -438,6 +474,8 @@ class FireRedAudioRuntime:
                 raise WorkerProtocolError("同一批次必须使用相同设备")
             if str(request.get("memory_mode") or "auto") != memory_mode:
                 raise WorkerProtocolError("同一批次必须使用相同显存模式")
+            if str(request.get("acceleration_mode") or "auto_safe") != acceleration_mode:
+                raise WorkerProtocolError("同一批次必须使用相同加速模式")
         task_id = f"tts-batch-{uuid.uuid4()}"
         started = time.perf_counter()
         with self._lock:
@@ -453,7 +491,7 @@ class FireRedAudioRuntime:
             self._progress("validating", 0.01, f"正在校验 {len(normalized)} 条批量 TTS")
             _reset_cuda_peak_stats(device)
             try:
-                self._load(model_root, device, True, memory_mode)
+                self._load(model_root, device, True, memory_mode, acceleration_mode)
                 cold_start = engine_before is None or engine_before is not self._engine
                 self._update_state(cold_start=cold_start)
                 assert self._engine is not None
@@ -536,6 +574,7 @@ class FireRedAudioRuntime:
                     cold_start=cold_start,
                     device=device,
                     memory_mode=self._state.memory_mode,
+                    acceleration_mode=self._state.acceleration_mode,
                     output_duration_seconds=total_duration,
                 )
                 performance.update(
@@ -746,6 +785,7 @@ def _write_output_metadata(path: Path, task: str, request: dict[str, Any]) -> Pa
         "quality_preset",
         "device",
         "memory_mode",
+        "acceleration_mode",
         "seed",
         "language",
         "edit_type",
@@ -808,6 +848,7 @@ def _performance_report(
     device: str,
     memory_mode: str | None,
     output_duration_seconds: Any,
+    acceleration_mode: str | None = None,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "cold_start": bool(cold_start),
@@ -815,6 +856,7 @@ def _performance_report(
         "phase_seconds": trace["phase_timings"],
         "device": device,
         "memory_mode": memory_mode,
+        "acceleration_mode": acceleration_mode,
     }
     try:
         duration = float(output_duration_seconds)

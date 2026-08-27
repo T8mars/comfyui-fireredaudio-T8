@@ -1,5 +1,5 @@
 # Host-safe by design: this node has no additional in-process dependencies.
 #
-# FireRedAudio requires Python 3.10, torch 2.11.0 and transformers 5.8.0.
+# FireRedAudio requires Python 3.10, torch 2.8.0+cu128 and transformers 5.8.0.
 # Those packages belong to the isolated worker and MUST NOT be installed into
 # ComfyUI. Run scripts/setup_runtime.py explicitly to prepare that environment.

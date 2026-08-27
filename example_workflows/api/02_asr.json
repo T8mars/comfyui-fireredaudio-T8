@@ -6,6 +6,7 @@
       "custom_model_path": "",
       "device": "cuda:0",
       "memory_mode": "auto",
+      "acceleration_mode": "auto_safe",
       "profile": "lite",
       "worker_mode": "managed",
       "runtime_python": "",

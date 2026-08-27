@@ -6,6 +6,7 @@
       "custom_model_path": "",
       "device": "auto",
       "memory_mode": "auto",
+      "acceleration_mode": "auto_safe",
       "profile": "full",
       "worker_mode": "managed",
       "runtime_python": "",

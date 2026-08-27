@@ -66,6 +66,7 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                     device=str(payload.get("device") or "auto"),
                     profile=str(payload.get("profile") or "full"),
                     memory_mode=str(payload.get("memory_mode") or "auto"),
+                    acceleration_mode=str(payload.get("acceleration_mode") or "auto_safe"),
                 )
             elif route == "/v1/model/unload":
                 result = self.server.runtime.unload()

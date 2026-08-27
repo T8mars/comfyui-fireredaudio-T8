@@ -12,5 +12,5 @@ except ModuleNotFoundError as exc:
             "comfy_api.latest is required; install comfyui-fireredaudio-T8 in a current ComfyUI build."
         ) from _COMFY_IMPORT_ERROR
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = ["comfy_entrypoint", "__version__"]

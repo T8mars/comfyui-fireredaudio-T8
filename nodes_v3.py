@@ -215,6 +215,7 @@ def _base_request(
         "model_root": handle.model_root,
         "device": handle.device,
         "memory_mode": handle.memory_mode,
+        "acceleration_mode": handle.acceleration_mode,
         "release_after": handle.release_after,
     }
     if settings is not None:
@@ -237,6 +238,7 @@ class T8FireRedAudioModelLoader(io.ComfyNode):
                 io.String.Input("custom_model_path", display_name="自定义模型根目录", default="", optional=True),
                 io.Combo.Input("device", display_name="推理设备", options=["auto", "cuda:0", "cuda:1", "cuda:2", "cuda:3", "cpu"], default="auto", tooltip="auto 由隔离 Worker 选择第一张可用 NVIDIA GPU；运行时状态会显示真实显存。"),
                 io.Combo.Input("memory_mode", display_name="显存模式", options=["auto", "full_gpu", "sequential", "decoder_cpu"], default="auto", tooltip="auto 在低于 36GB 显存时让主模型与解码器顺序上卡。"),
+                io.Combo.Input("acceleration_mode", display_name="加速模式", options=["auto_safe", "off", "flash_attention", "deepspeed", "fla_liger", "torch_compile"], default="auto_safe", tooltip="auto_safe 默认使用预编译 FlashAttention；DeepSpeed 为单卡 BF16 实验模式。失败会显式回退，且不会修改 ComfyUI 宿主环境。"),
                 io.Combo.Input("profile", display_name="校验配置", options=["full", "lite"], default="full"),
                 io.Combo.Input("worker_mode", display_name="Worker 模式", options=["managed", "external"], default="managed"),
                 io.String.Input("runtime_python", display_name="隔离 Python.exe", default="", optional=True, advanced=True),
@@ -283,6 +285,7 @@ class T8FireRedAudioModelLoader(io.ComfyNode):
         custom_model_path: str,
         device: str,
         memory_mode: str,
+        acceleration_mode: str,
         profile: str,
         worker_mode: str,
         runtime_python: str,
@@ -300,6 +303,7 @@ class T8FireRedAudioModelLoader(io.ComfyNode):
             model_root=str(root),
             device=device,
             memory_mode=memory_mode,
+            acceleration_mode=acceleration_mode,
             runtime_python=runtime_python.strip() if worker_mode == "managed" else "",
             worker_url=worker_url.strip() if worker_mode == "external" else "",
             worker_token=worker_token.strip() if worker_mode == "external" else "",
@@ -318,6 +322,7 @@ class T8FireRedAudioModelLoader(io.ComfyNode):
             "model_root": str(root),
             "device": device,
             "memory_mode": memory_mode,
+            "acceleration_mode": acceleration_mode,
             "profile": profile,
             "worker_mode": worker_mode,
             "host_environment_untouched": True,
@@ -974,6 +979,7 @@ class T8FireRedAudioBatchDubbing(io.ComfyNode):
                 "model_fingerprint": fingerprint(resolved_model_root),
                 "device": model.device,
                 "memory_mode": model.memory_mode,
+                "acceleration_mode": model.acceleration_mode,
             }
         )
         manifest_payload: dict[str, Any] = {

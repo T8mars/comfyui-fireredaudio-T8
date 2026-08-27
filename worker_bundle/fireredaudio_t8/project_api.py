@@ -68,7 +68,22 @@ def handle_project_request(
         result["project"] = store.snapshot()
         return result
     if path == "/v1/project/voices/list":
-        return {"voices": store.list_voice_profiles(), "project": store.snapshot()}
+        voices = store.list_voice_profiles()
+        for voice in voices:
+            reference_asset_id = voice.get("reference_asset_id")
+            if not reference_asset_id:
+                voice["reference_path"] = None
+                voice["reference_exists"] = False
+                continue
+            try:
+                voice["reference_path"] = str(
+                    store.resolve_asset_path(str(reference_asset_id))
+                )
+                voice["reference_exists"] = True
+            except WorkerProtocolError:
+                voice["reference_path"] = None
+                voice["reference_exists"] = False
+        return {"voices": voices, "project": store.snapshot()}
     if path == "/v1/project/voices/upsert":
         return {
             "voice": store.upsert_voice_profile(_mapping(payload.get("voice"))),

@@ -40,13 +40,13 @@ Manager 安装不会改动 ComfyUI 的 Python 依赖。首次使用前仍需运�
 
 ## Transformers 兼容方式
 
-FireRedAudio 官方代码固定要求 Python 3.10、PyTorch 2.11.0 和 Transformers 5.8.0。许多 ComfyUI 节点仍依赖 Transformers 4.x，因此本节点**不会**把 FireRedAudio 依赖安装进 ComfyUI：
+本节点的已验证隔离运行时固定为 Python 3.10、PyTorch 2.8.0+cu128 和 Transformers 5.8.0。许多 ComfyUI 节点仍依赖 Transformers 4.x，因此本节点**不会**把 FireRedAudio 依赖安装进 ComfyUI：
 
 ```text
 ComfyUI Python / Transformers 4.x
         │ 标准 AUDIO + 本地 RPC
         ▼
-隔离 Python 3.10 / torch 2.11 / Transformers 5.8 Worker
+隔离 Python 3.10 / torch 2.8 cu128 / Transformers 5.8 Worker
 ```
 
 `requirements.txt` 有意保持为空。Windows 节点发行包随附固定版本 `uv`，请显式准备隔离环境：
@@ -58,6 +58,8 @@ python scripts/setup_runtime.py
 也可在模型加载器中填写其他隔离 `python.exe`，或连接桌面整合包启动的外部 Worker。节点绝不调用 `pip` 修改 ComfyUI 环境。
 
 模型加载器的设备默认使用 `auto`。实际 GPU、空闲显存和最终选用的显存模式可通过“运行时控制”节点查看；`auto` 会在空闲显存不足 36 GiB 时选择顺序卸载，而不是只看显卡标称总显存。
+
+加速模式默认 `auto_safe`，使用预编译 FlashAttention 2 wheel。DeepSpeed BF16 已通过单卡完整 TTS，但仍是手动实验模式；FLA+Liger 在没有可审计 `causal-conv1d` Windows wheel 时会明确显示部分 PyTorch 回退。安装器从固定 URL 下载预编译 wheel、校验 SHA-256 和 Python/Torch/CUDA ABI，不从源码编译，也不修改 ComfyUI 宿主环境。
 
 ## 模型
 

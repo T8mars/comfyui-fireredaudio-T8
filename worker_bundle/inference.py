@@ -295,11 +295,13 @@ class FireRedAudioInference:
         vae_decoder_path: str | None = None,
         device: str = "cuda:0",
         memory_mode: str = "full_gpu",
+        acceleration_mode: str = "auto_safe",
     ):
         self.device = torch.device(device)
         if memory_mode not in {"full_gpu", "sequential", "decoder_cpu"}:
             raise ValueError("memory_mode must be full_gpu, sequential, or decoder_cpu")
         self.memory_mode = memory_mode
+        self.acceleration_mode = acceleration_mode
         self._cancel_check: Callable[[], None] = lambda: None
         self._progress_callback: Callable[[str, float, str], None] = (
             lambda phase, progress, message: None
@@ -312,7 +314,12 @@ class FireRedAudioInference:
         # so every mutation to a shared object is visible in one place.
         self.tokenizer.padding_side = "left"
         self.processor = FireRedAudioProcessor.from_pretrained(processor_path or model_path)
-        self.model = load_fireredaudio(model_path, device=self.device)
+        self.model = load_fireredaudio(
+            model_path, device=self.device, acceleration_mode=self.acceleration_mode
+        )
+        self.acceleration = dict(
+            getattr(self.model, "_fireredaudio_acceleration", {})
+        )
 
         self.encoder = AudioPromptEncoder(
             tokenizer=self.tokenizer,
@@ -849,6 +856,12 @@ def parse_args():
         choices=["full_gpu", "sequential", "decoder_cpu"],
         help="generation placement; sequential avoids simultaneous main/decoder GPU residency",
     )
+    p.add_argument(
+        "--acceleration-mode",
+        default="auto_safe",
+        choices=["off", "auto_safe", "flash_attention", "fla_liger", "torch_compile", "deepspeed"],
+        help="single-GPU acceleration; unavailable modes report a fallback",
+    )
     p.add_argument("--seed", type=int, default=None, help="left unseeded when omitted")
     p.add_argument("--output", default=None,
                    help="txt for understanding tasks (printed as well if omitted); "
@@ -937,6 +950,7 @@ def main():
         vae_decoder_path=args.vae_decoder,
         device=args.device,
         memory_mode=args.memory_mode,
+        acceleration_mode=args.acceleration_mode,
     )
 
     if args.task in UNDERSTAND_TASKS:

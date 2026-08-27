@@ -9,6 +9,7 @@ class RuntimeHandle:
     model_root: str
     device: str = "auto"
     memory_mode: str = "auto"
+    acceleration_mode: str = "auto_safe"
     runtime_python: str = ""
     worker_url: str = ""
     worker_token: str = ""

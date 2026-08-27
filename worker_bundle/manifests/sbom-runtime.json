@@ -15,6 +15,14 @@
       ]
     },
     {
+      "name": "annotated-types",
+      "version": "0.8.0",
+      "license": "MIT",
+      "licenseFiles": [
+        "annotated_types-0.8.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
       "name": "anyio",
       "version": "4.14.2",
       "license": "MIT",
@@ -47,6 +55,14 @@
       ]
     },
     {
+      "name": "deepspeed",
+      "version": "0.17.5+e1560d84",
+      "license": "Apache Software License 2.0",
+      "licenseFiles": [
+        "deepspeed-0.17.5+e1560d84.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
       "name": "einops",
       "version": "0.8.2",
       "license": "MIT",
@@ -71,6 +87,30 @@
       ]
     },
     {
+      "name": "fla-core",
+      "version": "0.5.0",
+      "license": "UNKNOWN",
+      "licenseFiles": [
+        "fla_core-0.5.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "flash-linear-attention",
+      "version": "0.5.0",
+      "license": "UNKNOWN",
+      "licenseFiles": [
+        "flash_linear_attention-0.5.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "flash_attn",
+      "version": "2.8.3",
+      "license": "UNKNOWN",
+      "licenseFiles": [
+        "flash_attn-2.8.3.dist-info/LICENSE"
+      ]
+    },
+    {
       "name": "fsspec",
       "version": "2026.7.0",
       "license": "BSD-3-Clause",
@@ -92,6 +132,14 @@
       "license": "Apache-2.0",
       "licenseFiles": [
         "hf_xet-1.6.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "hjson",
+      "version": "3.1.0",
+      "license": "MIT License",
+      "licenseFiles": [
+        "hjson-3.1.0.dist-info/LICENSE.txt"
       ]
     },
     {
@@ -135,6 +183,15 @@
       ]
     },
     {
+      "name": "liger_kernel",
+      "version": "0.8.0",
+      "license": "BSD 2-CLAUSE LICENSE\nCopyright 2024 LinkedIn Corporation \nAll Rights Reserved.\nRedistribution and use in source and binary forms, with or\nwithout modification, are permitted provided that the following\nconditions are met:\n1. Redistributions of source code must retain the above copyright\nnotice, this list of conditions and the following disclaimer.\n2. Redistributions in binary form must reproduce the above\ncopyright notice, this list of conditions and the following\ndisclaimer in the documentation and/or other materials provided\nwith the distribution.\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n\"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\nLIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\nA PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT\nHOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,\nSPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT\nLIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,\nDATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY\nTHEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\nOF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+      "licenseFiles": [
+        "liger_kernel-0.8.0.dist-info/licenses/LICENSE",
+        "liger_kernel-0.8.0.dist-info/licenses/NOTICE"
+      ]
+    },
+    {
       "name": "markdown-it-py",
       "version": "4.2.0",
       "license": "UNKNOWN",
@@ -168,11 +225,27 @@
       ]
     },
     {
+      "name": "msgpack",
+      "version": "1.1.1",
+      "license": "Apache 2.0",
+      "licenseFiles": [
+        "msgpack-1.1.1.dist-info/licenses/COPYING"
+      ]
+    },
+    {
       "name": "networkx",
       "version": "3.4.2",
       "license": "UNKNOWN",
       "licenseFiles": [
         "networkx-3.4.2.dist-info/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "ninja",
+      "version": "1.13.0",
+      "license": "UNKNOWN",
+      "licenseFiles": [
+        "ninja-1.13.0.dist-info/licenses/LICENSE_Apache_20"
       ]
     },
     {
@@ -187,6 +260,12 @@
       ]
     },
     {
+      "name": "nvidia-ml-py",
+      "version": "13.610.43",
+      "license": "BSD",
+      "licenseFiles": []
+    },
+    {
       "name": "packaging",
       "version": "26.3",
       "license": "Apache-2.0 OR BSD-2-Clause",
@@ -194,6 +273,38 @@
         "packaging-26.3.dist-info/licenses/LICENSE",
         "packaging-26.3.dist-info/licenses/LICENSE.APACHE",
         "packaging-26.3.dist-info/licenses/LICENSE.BSD"
+      ]
+    },
+    {
+      "name": "psutil",
+      "version": "7.0.0",
+      "license": "BSD-3-Clause",
+      "licenseFiles": [
+        "psutil-7.0.0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "py-cpuinfo",
+      "version": "9.0.0",
+      "license": "MIT",
+      "licenseFiles": [
+        "py_cpuinfo-9.0.0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "pydantic",
+      "version": "2.11.9",
+      "license": "MIT",
+      "licenseFiles": [
+        "pydantic-2.11.9.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pydantic_core",
+      "version": "2.33.2",
+      "license": "MIT",
+      "licenseFiles": [
+        "pydantic_core-2.33.2.dist-info/licenses/LICENSE"
       ]
     },
     {
@@ -238,24 +349,31 @@
     },
     {
       "name": "setuptools",
-      "version": "81.0.0",
+      "version": "80.9.0",
       "license": "MIT",
       "licenseFiles": [
-        "setuptools-81.0.0.dist-info/licenses/LICENSE",
+        "setuptools-80.9.0.dist-info/licenses/LICENSE",
         "setuptools/_vendor/autocommand-2.2.2.dist-info/LICENSE",
         "setuptools/_vendor/backports.tarfile-1.2.0.dist-info/LICENSE",
-        "setuptools/_vendor/importlib_metadata-8.7.1.dist-info/licenses/LICENSE",
-        "setuptools/_vendor/jaraco.text-4.0.0.dist-info/LICENSE",
-        "setuptools/_vendor/jaraco_context-6.1.0.dist-info/licenses/LICENSE",
-        "setuptools/_vendor/jaraco_functools-4.4.0.dist-info/licenses/LICENSE",
-        "setuptools/_vendor/more_itertools-10.8.0.dist-info/licenses/LICENSE",
-        "setuptools/_vendor/packaging-26.0.dist-info/licenses/LICENSE",
-        "setuptools/_vendor/packaging-26.0.dist-info/licenses/LICENSE.APACHE",
-        "setuptools/_vendor/packaging-26.0.dist-info/licenses/LICENSE.BSD",
-        "setuptools/_vendor/platformdirs-4.4.0.dist-info/licenses/LICENSE",
-        "setuptools/_vendor/tomli-2.4.0.dist-info/licenses/LICENSE",
-        "setuptools/_vendor/wheel-0.46.3.dist-info/licenses/LICENSE.txt",
-        "setuptools/_vendor/zipp-3.23.0.dist-info/licenses/LICENSE",
+        "setuptools/_vendor/importlib_metadata-8.0.0.dist-info/LICENSE",
+        "setuptools/_vendor/inflect-7.3.1.dist-info/LICENSE",
+        "setuptools/_vendor/jaraco.collections-5.1.0.dist-info/LICENSE",
+        "setuptools/_vendor/jaraco.context-5.3.0.dist-info/LICENSE",
+        "setuptools/_vendor/jaraco.functools-4.0.1.dist-info/LICENSE",
+        "setuptools/_vendor/jaraco.text-3.12.1.dist-info/LICENSE",
+        "setuptools/_vendor/more_itertools-10.3.0.dist-info/LICENSE",
+        "setuptools/_vendor/packaging-24.2.dist-info/LICENSE",
+        "setuptools/_vendor/packaging-24.2.dist-info/LICENSE.APACHE",
+        "setuptools/_vendor/packaging-24.2.dist-info/LICENSE.BSD",
+        "setuptools/_vendor/platformdirs-4.2.2.dist-info/licenses/LICENSE",
+        "setuptools/_vendor/tomli-2.0.1.dist-info/LICENSE",
+        "setuptools/_vendor/typeguard-4.3.0.dist-info/LICENSE",
+        "setuptools/_vendor/typing_extensions-4.12.2.dist-info/LICENSE",
+        "setuptools/_vendor/wheel-0.45.1.dist-info/LICENSE.txt",
+        "setuptools/_vendor/wheel/vendored/packaging/LICENSE",
+        "setuptools/_vendor/wheel/vendored/packaging/LICENSE.APACHE",
+        "setuptools/_vendor/wheel/vendored/packaging/LICENSE.BSD",
+        "setuptools/_vendor/zipp-3.19.2.dist-info/LICENSE",
         "setuptools/config/NOTICE",
         "setuptools/config/_validate_pyproject/NOTICE"
       ]
@@ -285,19 +403,19 @@
     },
     {
       "name": "torch",
-      "version": "2.11.0+cu128",
+      "version": "2.8.0+cu128",
       "license": "BSD-3-Clause",
       "licenseFiles": [
-        "torch-2.11.0+cu128.dist-info/LICENSE",
-        "torch-2.11.0+cu128.dist-info/NOTICE"
+        "torch-2.8.0+cu128.dist-info/LICENSE",
+        "torch-2.8.0+cu128.dist-info/NOTICE"
       ]
     },
     {
       "name": "torchaudio",
-      "version": "2.11.0+cu128",
+      "version": "2.8.0+cu128",
       "license": "UNKNOWN",
       "licenseFiles": [
-        "torchaudio-2.11.0+cu128.dist-info/licenses/LICENSE"
+        "torchaudio-2.8.0+cu128.dist-info/licenses/LICENSE"
       ]
     },
     {
@@ -315,12 +433,28 @@
       ]
     },
     {
+      "name": "triton-windows",
+      "version": "3.4.0.post21",
+      "license": "UNKNOWN",
+      "licenseFiles": [
+        "triton_windows-3.4.0.post21.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
       "name": "typer",
       "version": "0.27.1",
       "license": "MIT",
       "licenseFiles": [
         "typer-0.27.1.dist-info/licenses/LICENSE",
         "typer/_click/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "typing-inspection",
+      "version": "0.4.4",
+      "license": "MIT",
+      "licenseFiles": [
+        "typing_inspection-0.4.4.dist-info/licenses/LICENSE"
       ]
     },
     {
