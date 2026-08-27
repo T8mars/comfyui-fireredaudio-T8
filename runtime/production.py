@@ -6,9 +6,10 @@ import math
 import re
 import unicodedata
 import wave
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 MANIFEST_VERSION = 1
 
@@ -70,6 +71,7 @@ class ScriptLine:
     language: str
     start_seconds: float | None = None
     end_seconds: float | None = None
+    scene: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -320,6 +322,7 @@ def load_project_exchange(
             language=str(raw.get("language") or "zh"),
             start_seconds=(None if raw.get("start_seconds") is None else float(raw["start_seconds"])),
             end_seconds=(None if raw.get("end_seconds") is None else float(raw["end_seconds"])),
+            scene=str(raw.get("scene") or "").strip(),
         )
         for index, raw in enumerate(raw_plan.get("lines") or [])
         if isinstance(raw, dict)
@@ -427,6 +430,7 @@ def _assign_ids(raw_lines: list[dict[str, Any]]) -> tuple[ScriptLine, ...]:
                 language=item["language"],
                 start_seconds=item.get("start_seconds"),
                 end_seconds=item.get("end_seconds"),
+                scene=str(item.get("scene") or "").strip(),
             )
         )
     return tuple(output)
@@ -470,9 +474,16 @@ def _parse_srt(script: str, bank: VoiceBank, default_speaker: str) -> list[dict[
 def _parse_role_script(script: str, bank: VoiceBank, default_speaker: str) -> list[dict[str, Any]]:
     names = {item.name.casefold() for item in bank.profiles}
     output: list[dict[str, Any]] = []
+    current_scene = ""
     for source_index, raw in enumerate(script.replace("\r", "").splitlines(), 1):
         value = raw.strip()
-        if not value or value.startswith("#"):
+        if not value:
+            continue
+        scene_match = re.match(r"^#(?:#\s*|\s*(?:scene|场景)\s*[:：]\s*)(.+)$", value, re.IGNORECASE)
+        if scene_match:
+            current_scene = scene_match.group(1).strip()
+            continue
+        if value.startswith("#"):
             continue
         start = end = None
         inline = _INLINE_TIME_RE.match(value)
@@ -497,6 +508,7 @@ def _parse_role_script(script: str, bank: VoiceBank, default_speaker: str) -> li
                 "language": profile.language if profile else "zh",
                 "start_seconds": start,
                 "end_seconds": end,
+                "scene": current_scene,
             }
         )
     return output
@@ -523,6 +535,7 @@ def _parse_json_script(script: str, bank: VoiceBank, default_speaker: str) -> li
                 "language": str(item.get("language") or (profile.language if profile else "zh")),
                 "start_seconds": float(start) if start is not None else None,
                 "end_seconds": float(end) if end is not None else None,
+                "scene": str(item.get("scene") or "").strip(),
             }
         )
     return output
@@ -670,10 +683,307 @@ def _read_wav_tensor(path: str | Path):
 def _resample_linear(audio, source_rate: int, target_rate: int):
     if source_rate == target_rate:
         return audio
-    import torch.nn.functional as functional
+    from torch.nn import functional
 
     length = max(1, round(audio.shape[-1] * target_rate / source_rate))
     return functional.interpolate(audio.unsqueeze(0), size=length, mode="linear", align_corners=False).squeeze(0)
+
+
+def _write_wav_tensor(path: str | Path, audio, sample_rate: int) -> None:
+    import torch
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    pcm = (
+        (audio.clamp(-1.0, 32767.0 / 32768.0) * 32768.0)
+        .round()
+        .clamp(-32768, 32767)
+        .to(torch.int16)
+        .transpose(0, 1)
+        .contiguous()
+    )
+    with wave.open(str(target), "wb") as writer:
+        writer.setnchannels(int(audio.shape[0]))
+        writer.setsampwidth(2)
+        writer.setframerate(int(sample_rate))
+        writer.writeframes(pcm.numpy().tobytes())
+
+
+def crop_wav_region(
+    source_path: str | Path,
+    output_path: str | Path,
+    *,
+    start_seconds: float,
+    end_seconds: float,
+    context_ms: int = 0,
+) -> dict[str, Any]:
+    """Create a PCM16 repair clip without modifying or resampling its source."""
+    source = Path(source_path).resolve()
+    target = Path(output_path).resolve()
+    if source == target:
+        raise ValueError("局部修复片段不能覆盖源音频")
+    with wave.open(str(source), "rb") as reader:
+        if reader.getsampwidth() != 2:
+            raise ValueError("局部修复当前只支持 PCM16 WAV")
+        channels = reader.getnchannels()
+        sample_rate = reader.getframerate()
+        total_frames = reader.getnframes()
+        frames = reader.readframes(total_frames)
+    duration = total_frames / sample_rate
+    requested_start = float(start_seconds)
+    requested_end = float(end_seconds)
+    if requested_start < 0 or requested_end <= requested_start:
+        raise ValueError("局部修复时间范围无效：开始必须 >= 0 且结束必须大于开始")
+    if requested_start >= duration:
+        raise ValueError(f"局部修复开始时间超出源音频：{requested_start:.3f}s / {duration:.3f}s")
+    requested_end = min(requested_end, duration)
+    context = max(0, min(5000, int(context_ms))) / 1000.0
+    start_frame = max(0, round((requested_start - context) * sample_rate))
+    end_frame = min(total_frames, round((requested_end + context) * sample_rate))
+    if end_frame <= start_frame:
+        raise ValueError("局部修复裁切后没有有效采样")
+    frame_bytes = channels * 2
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(target), "wb") as writer:
+        writer.setnchannels(channels)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(frames[start_frame * frame_bytes : end_frame * frame_bytes])
+    return {
+        "source_path": str(source),
+        "source_sha256": file_digest(source),
+        "clip_path": str(target),
+        "clip_sha256": file_digest(target),
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "source_frames": total_frames,
+        "source_duration_seconds": duration,
+        "requested_start_seconds": float(start_seconds),
+        "requested_end_seconds": float(end_seconds),
+        "replace_start_frame": start_frame,
+        "replace_end_frame": end_frame,
+        "replace_start_seconds": start_frame / sample_rate,
+        "replace_end_seconds": end_frame / sample_rate,
+        "context_ms": int(context_ms),
+        "source_modified": False,
+    }
+
+
+def replace_wav_region(
+    source_path: str | Path,
+    edited_path: str | Path,
+    output_path: str | Path,
+    *,
+    replace_start_frame: int,
+    replace_end_frame: int,
+    crossfade_ms: int = 40,
+    expected_source_sha256: str = "",
+) -> dict[str, Any]:
+    """Splice an edited clip into a source with equal-power boundary blends."""
+    import torch
+
+    source = Path(source_path).resolve()
+    edited = Path(edited_path).resolve()
+    target = Path(output_path).resolve()
+    if source == target:
+        raise ValueError("局部修复输出不能覆盖源音频")
+    before_digest = file_digest(source)
+    if expected_source_sha256 and before_digest.lower() != expected_source_sha256.lower():
+        raise ValueError("源音频自创建修复计划后已变化，拒绝回填")
+    original, sample_rate = _read_wav_tensor(source)
+    replacement, edited_rate = _read_wav_tensor(edited)
+    replacement = _resample_linear(replacement, edited_rate, sample_rate)
+    if replacement.shape[0] == 1 and original.shape[0] > 1:
+        replacement = replacement.repeat(original.shape[0], 1)
+    elif original.shape[0] == 1 and replacement.shape[0] > 1:
+        replacement = replacement.mean(dim=0, keepdim=True)
+    elif replacement.shape[0] != original.shape[0]:
+        raise ValueError("编辑片段与源音频声道数不兼容")
+    start = max(0, int(replace_start_frame))
+    end = min(int(original.shape[-1]), int(replace_end_frame))
+    if end <= start:
+        raise ValueError("修复计划中的回填范围无效")
+    if replacement.shape[-1] <= 0:
+        raise ValueError("编辑片段为空")
+    source_region = original[:, start:end]
+    requested_fade = round(max(0, min(2000, int(crossfade_ms))) * sample_rate / 1000)
+    actual_fade = min(
+        requested_fade,
+        int(source_region.shape[-1]) // 2,
+        int(replacement.shape[-1]) // 2,
+    )
+    if actual_fade:
+        phase = torch.linspace(0.0, math.pi / 2.0, actual_fade, dtype=torch.float32)
+        fade_out = torch.cos(phase).unsqueeze(0)
+        fade_in = torch.sin(phase).unsqueeze(0)
+        replacement[:, :actual_fade] = (
+            source_region[:, :actual_fade] * fade_out
+            + replacement[:, :actual_fade] * fade_in
+        )
+        replacement[:, -actual_fade:] = (
+            replacement[:, -actual_fade:] * fade_out
+            + source_region[:, -actual_fade:] * fade_in
+        )
+    repaired = torch.cat((original[:, :start], replacement, original[:, end:]), dim=-1)
+    peak_before_write = float(repaired.abs().max().item()) if repaired.numel() else 0.0
+    clipped_samples = int((repaired.abs() > 1.0).sum().item())
+    _write_wav_tensor(target, repaired, sample_rate)
+    after_digest = file_digest(source)
+    return {
+        "source_path": str(source),
+        "edited_clip_path": str(edited),
+        "output_path": str(target),
+        "source_sha256": before_digest,
+        "edited_clip_sha256": file_digest(edited),
+        "output_sha256": file_digest(target),
+        "source_preserved": before_digest == after_digest,
+        "sample_rate": sample_rate,
+        "channels": int(original.shape[0]),
+        "replace_start_seconds": start / sample_rate,
+        "replace_end_seconds": end / sample_rate,
+        "source_region_duration_seconds": (end - start) / sample_rate,
+        "edited_duration_seconds": int(replacement.shape[-1]) / sample_rate,
+        "output_duration_seconds": int(repaired.shape[-1]) / sample_rate,
+        "duration_delta_seconds": (int(replacement.shape[-1]) - (end - start)) / sample_rate,
+        "crossfade_requested_ms": int(crossfade_ms),
+        "crossfade_actual_ms": actual_fade * 1000 / sample_rate,
+        "crossfade_curve": "equal_power",
+        "edited_source_sample_rate": edited_rate,
+        "edited_resampled": edited_rate != sample_rate,
+        "peak_before_write": peak_before_write,
+        "clipped_samples_before_write": clipped_samples,
+    }
+
+
+def pad_wav_to_frames(path: str | Path, total_frames: int) -> None:
+    """Pad a PCM16 WAV with silence so every stem shares an exact endpoint."""
+    target = Path(path)
+    with wave.open(str(target), "rb") as reader:
+        channels = reader.getnchannels()
+        sample_width = reader.getsampwidth()
+        sample_rate = reader.getframerate()
+        frame_count = reader.getnframes()
+        frames = reader.readframes(frame_count)
+    if sample_width != 2:
+        raise ValueError("分轨补齐当前只支持 PCM16 WAV")
+    wanted = max(frame_count, int(total_frames))
+    if wanted == frame_count:
+        return
+    frames += bytes((wanted - frame_count) * channels * sample_width)
+    with wave.open(str(target), "wb") as writer:
+        writer.setnchannels(channels)
+        writer.setsampwidth(sample_width)
+        writer.setframerate(sample_rate)
+        writer.writeframes(frames)
+
+
+def render_grouped_stems(
+    items: Iterable[dict[str, Any]],
+    placements: Iterable[dict[str, Any]],
+    output_directory: str | Path,
+    *,
+    group_key: str,
+    filename_prefix: str,
+    sample_rate: int,
+    total_frames: int,
+) -> list[dict[str, Any]]:
+    """Render timeline-aligned speaker or scene stems and pad them to master length."""
+    playable = [
+        dict(item)
+        for item in items
+        if item.get("status") == "complete" and Path(str(item.get("output_path") or "")).is_file()
+    ]
+    offsets = {
+        str(item.get("line_id") or ""): float(item.get("offset_seconds") or 0.0)
+        for item in placements
+    }
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in playable:
+        label = str(item.get(group_key) or "unassigned").strip() or "unassigned"
+        aligned = dict(item)
+        aligned["start_seconds"] = offsets.get(str(item.get("line_id") or ""), 0.0)
+        aligned["end_seconds"] = None
+        groups.setdefault(label, []).append(aligned)
+    output = Path(output_directory)
+    output.mkdir(parents=True, exist_ok=True)
+    reports: list[dict[str, Any]] = []
+    used_names: set[str] = set()
+    for label, values in sorted(groups.items(), key=lambda pair: pair[0].casefold()):
+        safe = "".join(
+            character if character.isalnum() or character in "._-" else "-"
+            for character in label
+        ).strip(".-") or "unassigned"
+        base = f"{filename_prefix}-{safe}"[:100]
+        name = base
+        suffix = 2
+        while name.casefold() in used_names:
+            name = f"{base}-{suffix}"
+            suffix += 1
+        used_names.add(name.casefold())
+        target = output / f"{name}.wav"
+        report = render_timeline_to_wav(
+            values,
+            target,
+            mode="timeline",
+            gap_ms=0,
+            crossfade_ms=0,
+            peak_policy="none",
+            sample_rate=sample_rate,
+        )
+        pad_wav_to_frames(target, total_frames)
+        reports.append(
+            {
+                "group": label,
+                "group_key": group_key,
+                "path": str(target),
+                "sha256": file_digest(target),
+                "items": [str(item.get("line_id") or "") for item in values],
+                "sample_rate": sample_rate,
+                "channels": report["channels"],
+                "duration_seconds": total_frames / sample_rate,
+            }
+        )
+    return reports
+
+
+def build_batch_subtitles(
+    items: Iterable[dict[str, Any]], placements: Iterable[dict[str, Any]]
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Build actual-timing SRT and VTT from rendered batch placements."""
+    by_id = {str(item.get("line_id") or ""): item for item in items}
+    cues: list[dict[str, Any]] = []
+    for placement in placements:
+        line_id = str(placement.get("line_id") or "")
+        source = by_id.get(line_id, {})
+        start = float(placement.get("offset_seconds") or 0.0)
+        end = start + float(placement.get("duration_seconds") or 0.0)
+        if end <= start:
+            continue
+        speaker = str(source.get("speaker") or "").strip()
+        text = str(source.get("text") or "").strip()
+        body = f"[{speaker}] {text}" if speaker and text else text or speaker or line_id
+        cues.append({"line_id": line_id, "start_seconds": start, "end_seconds": end, "text": body})
+    cues.sort(key=lambda cue: (cue["start_seconds"], cue["end_seconds"], cue["line_id"]))
+
+    def timestamp(value: float, separator: str) -> str:
+        milliseconds = max(0, round(value * 1000))
+        hours, remainder = divmod(milliseconds, 3_600_000)
+        minutes, remainder = divmod(remainder, 60_000)
+        seconds, millis = divmod(remainder, 1000)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}{separator}{millis:03d}"
+
+    srt_blocks = []
+    vtt_blocks = ["WEBVTT", ""]
+    for index, cue in enumerate(cues, 1):
+        srt_blocks.append(
+            f"{index}\n{timestamp(cue['start_seconds'], ',')} --> {timestamp(cue['end_seconds'], ',')}\n{cue['text']}"
+        )
+        vtt_blocks.append(
+            f"{timestamp(cue['start_seconds'], '.')} --> {timestamp(cue['end_seconds'], '.')}\n{cue['text']}\n"
+        )
+    srt = "\n\n".join(srt_blocks) + ("\n" if srt_blocks else "")
+    vtt = "\n".join(vtt_blocks).rstrip() + "\n"
+    return srt, vtt, cues
 
 
 def render_timeline_to_wav(

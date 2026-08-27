@@ -23,11 +23,16 @@ from .runtime.audio_adapter import (
     audio_to_wav,
     export_audio_path,
     output_wav_path,
-    saved_audio_files_ui,
-    saved_audio_ui,
     save_audio_file,
     save_text_file,
+    saved_audio_files_ui,
+    saved_audio_ui,
     wav_to_audio,
+)
+from .runtime.evidence import (
+    extract_evidence_ranges,
+    parse_structured_json,
+    render_evidence_clips,
 )
 from .runtime.model_discovery import (
     MISSING_MODEL_OPTION,
@@ -38,20 +43,17 @@ from .runtime.model_discovery import (
     resolve_model,
     validate_sizes,
 )
-from .runtime.evidence import (
-    extract_evidence_ranges,
-    parse_structured_json,
-    render_evidence_clips,
-)
 from .runtime.postproduction import prepare_synchronized_ab
 from .runtime.production import (
     MANIFEST_VERSION,
     AudioBatch,
     ScriptPlan,
     VoiceBank,
+    build_batch_subtitles,
     can_reuse_manifest_item,
     create_voice_bank,
     create_voice_profile,
+    crop_wav_region,
     file_digest,
     line_fingerprint,
     load_manifest,
@@ -60,9 +62,11 @@ from .runtime.production import (
     merge_audio_batch_items,
     parse_line_ids,
     parse_script,
+    render_grouped_stems,
     render_timeline_to_wav,
-    stable_digest,
+    replace_wav_region,
     select_audio_batch_item,
+    stable_digest,
     text_error_rate,
     wav_metrics,
     write_manifest,
@@ -71,6 +75,7 @@ from .runtime.types import (
     DELIVERY_PRESETS,
     DeliveryPreset,
     GenerationSettings,
+    LocalRepairPlan,
     RuntimeHandle,
     delivery_preset,
 )
@@ -86,6 +91,8 @@ ScriptPlanType = io.Custom("T8_FIREREDAUDIO_SCRIPT_PLAN")
 AudioBatchType = io.Custom("T8_FIREREDAUDIO_AUDIO_BATCH")
 SpeechQAType = io.Custom("T8_FIREREDAUDIO_SPEECH_QA")
 DeliveryPresetType = io.Custom("T8_FIREREDAUDIO_DELIVERY_PRESET")
+LocalRepairPlanType = io.Custom("T8_FIREREDAUDIO_LOCAL_REPAIR_PLAN")
+NODE_VERSION = "0.12.0"
 
 LONG_LOCATE_PROMPTS = {
     "timeline_summary": (
@@ -1117,6 +1124,189 @@ class T8FireRedAudioAcousticEdit(io.ComfyNode):
         })
         result = _infer(model, request)
         return io.NodeOutput(wav_to_audio(result["output_path"]), instruction, _json(result))
+
+
+class T8FireRedAudioLocalRepairRange(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_LocalRepairRange",
+            display_name="FireRedAudio 局部修复范围 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "从原音频按手工时间或长音频定位 JSON 非破坏裁出修复片段；"
+                "原版、片段与不可变修复计划会一起传给编辑和回填节点。"
+            ),
+            inputs=[
+                io.Audio.Input("audio", display_name="原始音频"),
+                io.Combo.Input("range_mode", display_name="范围来源", options=["manual", "locator_json"], default="manual"),
+                io.Float.Input("start_seconds", display_name="手工开始（秒）", default=0.0, min=0.0, max=86400.0, step=0.01),
+                io.Float.Input("end_seconds", display_name="手工结束（秒）", default=5.0, min=0.01, max=86400.0, step=0.01),
+                io.Int.Input("range_index", display_name="定位结果序号", default=1, min=1, max=100),
+                io.Int.Input("context_ms", display_name="两侧上下文（毫秒）", default=250, min=0, max=5000),
+                io.String.Input("locator_json", display_name="可选定位 JSON", multiline=True, force_input=True, optional=True),
+            ],
+            outputs=[
+                io.Audio.Output("original_audio", display_name="原版 A"),
+                io.Audio.Output("repair_clip", display_name="待编辑片段"),
+                LocalRepairPlanType.Output("repair_plan", display_name="局部修复计划"),
+                io.String.Output("range_report", display_name="范围报告"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        audio: dict,
+        range_mode: str,
+        start_seconds: float,
+        end_seconds: float,
+        range_index: int,
+        context_ms: int,
+        locator_json: str = "",
+        **kwargs,
+    ) -> str:
+        source = audio_to_wav(audio, "local-repair-source")
+        return stable_digest(
+            {
+                "source_sha256": file_digest(source),
+                "range_mode": range_mode,
+                "start_seconds": float(start_seconds),
+                "end_seconds": float(end_seconds),
+                "range_index": int(range_index),
+                "context_ms": int(context_ms),
+                "locator_json": str(locator_json or ""),
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        audio: dict,
+        range_mode: str,
+        start_seconds: float,
+        end_seconds: float,
+        range_index: int,
+        context_ms: int,
+        locator_json: str = "",
+    ) -> io.NodeOutput:
+        selected_start = float(start_seconds)
+        selected_end = float(end_seconds)
+        range_label = "手工范围"
+        if range_mode == "locator_json":
+            if not str(locator_json or "").strip():
+                raise ValueError("locator_json 模式必须连接长音频时间定位 JSON")
+            ranges = extract_evidence_ranges(
+                parse_structured_json(locator_json), default_clip_seconds=8.0, max_clips=100
+            )
+            if not ranges:
+                raise ValueError("定位 JSON 中没有可用时间范围")
+            position = int(range_index) - 1
+            if position < 0 or position >= len(ranges):
+                raise IndexError(f"定位结果序号超出范围：1–{len(ranges)}")
+            selected = ranges[position]
+            selected_start = float(selected["start_seconds"])
+            selected_end = float(selected["end_seconds"])
+            range_label = str(selected.get("label") or f"定位结果 {range_index}")
+        elif range_mode != "manual":
+            raise ValueError(f"不支持的局部修复范围来源：{range_mode}")
+        source = audio_to_wav(audio, "local-repair-source")
+        clip = output_wav_path("local-repair-clip")
+        report = crop_wav_region(
+            source,
+            clip,
+            start_seconds=selected_start,
+            end_seconds=selected_end,
+            context_ms=context_ms,
+        )
+        report.update(range_source=range_mode, range_label=range_label)
+        plan = LocalRepairPlan(
+            source_path=str(source),
+            source_sha256=str(report["source_sha256"]),
+            sample_rate=int(report["sample_rate"]),
+            channels=int(report["channels"]),
+            source_frames=int(report["source_frames"]),
+            requested_start_seconds=selected_start,
+            requested_end_seconds=selected_end,
+            replace_start_frame=int(report["replace_start_frame"]),
+            replace_end_frame=int(report["replace_end_frame"]),
+            context_ms=int(context_ms),
+            range_source=range_mode,
+            range_label=range_label,
+        )
+        return io.NodeOutput(audio, wav_to_audio(clip), plan, _json(report))
+
+
+class T8FireRedAudioLocalRepairApply(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_LocalRepairApply",
+            display_name="FireRedAudio 局部修复回填 A/B · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "把语义或声学编辑后的片段非破坏回填到原音频；保留原声道和采样率，"
+                "使用等功率交叉淡化并同时输出原版/修复版与哈希审计报告。"
+            ),
+            inputs=[
+                LocalRepairPlanType.Input("repair_plan", display_name="局部修复计划"),
+                io.Audio.Input("edited_clip", display_name="编辑后片段"),
+                io.Int.Input("crossfade_ms", display_name="边缘交叉淡化（毫秒）", default=40, min=0, max=2000),
+            ],
+            outputs=[
+                io.Audio.Output("original_audio", display_name="原版 A"),
+                io.Audio.Output("repaired_audio", display_name="修复版 B"),
+                io.String.Output("replacement_report", display_name="替换审计报告"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        repair_plan: LocalRepairPlan,
+        edited_clip: dict,
+        crossfade_ms: int,
+        **kwargs,
+    ) -> str:
+        if not isinstance(repair_plan, LocalRepairPlan):
+            return "invalid-local-repair-plan"
+        edited = audio_to_wav(edited_clip, "local-repair-edited")
+        return stable_digest(
+            {
+                "repair_plan": repair_plan.to_dict(),
+                "edited_sha256": file_digest(edited),
+                "crossfade_ms": int(crossfade_ms),
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        repair_plan: LocalRepairPlan,
+        edited_clip: dict,
+        crossfade_ms: int,
+    ) -> io.NodeOutput:
+        if not isinstance(repair_plan, LocalRepairPlan):
+            raise TypeError("局部修复回填必须连接局部修复计划")
+        edited = audio_to_wav(edited_clip, "local-repair-edited")
+        output = output_wav_path("local-repair-result")
+        report = replace_wav_region(
+            repair_plan.source_path,
+            edited,
+            output,
+            replace_start_frame=repair_plan.replace_start_frame,
+            replace_end_frame=repair_plan.replace_end_frame,
+            crossfade_ms=crossfade_ms,
+            expected_source_sha256=repair_plan.source_sha256,
+        )
+        report["repair_plan"] = repair_plan.to_dict()
+        return io.NodeOutput(
+            wav_to_audio(repair_plan.source_path),
+            wav_to_audio(output),
+            _json(report),
+        )
 
 
 class T8FireRedAudioReferenceQuality(io.ComfyNode):
@@ -2369,7 +2559,8 @@ class T8FireRedAudioSaveAudioBatch(io.ComfyNode):
         if extension not in {"wav", "flac", "mp3", "ogg"}:
             raise ValueError("audio_format 必须是 wav/flac/mp3/ogg")
         project = _safe_name(project_name, "fireredaudio-batch")
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        now = datetime.now().astimezone()
+        stamp = now.strftime("%Y%m%d-%H%M%S-%f")
         clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/exports"
         export_dir = _safe_output_dir(f"{clean_subfolder}/{project}-{stamp}")
         saved_items: list[dict[str, Any]] = []
@@ -2417,7 +2608,7 @@ class T8FireRedAudioSaveAudioBatch(io.ComfyNode):
             "project_name": project,
             "source_manifest_path": audio_batch.manifest_path,
             "audio_format": extension,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "created_at": now.isoformat(timespec="seconds"),
             "items": saved_items,
         }
         write_manifest(manifest_path, manifest_payload)
@@ -2447,6 +2638,343 @@ class T8FireRedAudioSaveAudioBatch(io.ComfyNode):
             str(zip_path) if zip_path else "",
             _json(report),
             ui=saved_audio_files_ui(saved_paths[:preview_count]),
+        )
+
+
+class T8FireRedAudioProductionPackage(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_ProductionPackage",
+            display_name="FireRedAudio 分轨制作交付包 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "按角色和场景导出等长对白分轨，并打包 Master、dialogue、room tone、BGM、"
+                "实际 SRT/VTT、版本、参数、素材哈希和便携 Manifest。"
+            ),
+            inputs=[
+                AudioBatchType.Input("audio_batch", display_name="批量音频"),
+                io.String.Input("project_name", display_name="交付项目名", default="fireredaudio-production"),
+                io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/deliveries"),
+                io.Int.Input("sample_rate", display_name="制作采样率", default=48000, min=8000, max=192000),
+                io.Int.Input("crossfade_ms", display_name="Master 对白交叉淡化（毫秒）", default=40, min=0, max=2000),
+                io.Boolean.Input("include_role_stems", display_name="导出角色分轨", default=True),
+                io.Boolean.Input("include_scene_stems", display_name="导出场景分轨", default=True),
+                io.Boolean.Input("create_zip", display_name="创建一键交付 ZIP", default=True),
+                io.Audio.Input("master_audio", display_name="可选外部 Master", optional=True),
+                io.Audio.Input("bgm_audio", display_name="可选 BGM", optional=True),
+                io.Audio.Input("room_tone_audio", display_name="可选 room tone", optional=True),
+                io.String.Input("source_subtitles", display_name="可选原始字幕", multiline=True, force_input=True, optional=True),
+                DeliveryPresetType.Input("delivery_preset", display_name="可选交付预设", optional=True),
+            ],
+            outputs=[
+                AudioBatchType.Output("audio_batch", display_name="原 AudioBatch（透传）"),
+                io.Audio.Output("master_audio", display_name="交付 Master"),
+                io.String.Output("manifest_path", display_name="制作 Manifest 路径"),
+                io.String.Output("zip_path", display_name="交付 ZIP 路径"),
+                io.String.Output("package_report", display_name="制作包报告"),
+            ],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        audio_batch: AudioBatch,
+        project_name: str,
+        subfolder: str,
+        sample_rate: int,
+        crossfade_ms: int,
+        include_role_stems: bool,
+        include_scene_stems: bool,
+        create_zip: bool,
+        master_audio: dict | None = None,
+        bgm_audio: dict | None = None,
+        room_tone_audio: dict | None = None,
+        source_subtitles: str = "",
+        delivery_preset: DeliveryPreset | None = None,
+        **kwargs,
+    ) -> str:
+        def audio_digest(value: dict | None, label: str) -> str | None:
+            return file_digest(audio_to_wav(value, label)) if value is not None else None
+
+        return stable_digest(
+            {
+                "audio_batch": _audio_batch_state(audio_batch),
+                "project_name": project_name,
+                "subfolder": subfolder,
+                "sample_rate": int(sample_rate),
+                "crossfade_ms": int(crossfade_ms),
+                "include_role_stems": bool(include_role_stems),
+                "include_scene_stems": bool(include_scene_stems),
+                "create_zip": bool(create_zip),
+                "master": audio_digest(master_audio, "production-master"),
+                "bgm": audio_digest(bgm_audio, "production-bgm"),
+                "room_tone": audio_digest(room_tone_audio, "production-room-tone"),
+                "source_subtitles": str(source_subtitles or ""),
+                "delivery_preset": delivery_preset.to_dict() if delivery_preset else None,
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        audio_batch: AudioBatch,
+        project_name: str,
+        subfolder: str,
+        sample_rate: int,
+        crossfade_ms: int,
+        include_role_stems: bool,
+        include_scene_stems: bool,
+        create_zip: bool,
+        master_audio: dict | None = None,
+        bgm_audio: dict | None = None,
+        room_tone_audio: dict | None = None,
+        source_subtitles: str = "",
+        delivery_preset: DeliveryPreset | None = None,
+    ) -> io.NodeOutput:
+        if not isinstance(audio_batch, AudioBatch):
+            raise TypeError("分轨制作包必须连接 AudioBatch")
+        if delivery_preset is not None and not isinstance(delivery_preset, DeliveryPreset):
+            raise TypeError("交付预设输入类型无效")
+        source_items = audio_batch.successful_items()
+        if not source_items:
+            raise ValueError("AudioBatch 中没有可以制作交付包的成功音频")
+        source_hashes_before = {
+            str(item.get("line_id") or index): file_digest(item["output_path"])
+            for index, item in enumerate(source_items, 1)
+        }
+        project = _safe_name(project_name, "fireredaudio-production")
+        now = datetime.now().astimezone()
+        stamp = now.strftime("%Y%m%d-%H%M%S-%f")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/deliveries"
+        export_dir = _safe_output_dir(f"{clean_subfolder}/{project}-{stamp}")
+        mix_dir = export_dir / "mix"
+        stems_dir = export_dir / "stems"
+        assets_dir = export_dir / "assets"
+        subtitles_dir = export_dir / "subtitles"
+        for directory in (mix_dir, stems_dir, assets_dir, subtitles_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+
+        effective_rate = delivery_preset.sample_rate if delivery_preset else int(sample_rate)
+        effective_crossfade = delivery_preset.crossfade_ms if delivery_preset else int(crossfade_ms)
+        has_timing = any(item.get("start_seconds") is not None for item in source_items)
+        effective_mode = delivery_preset.mode if delivery_preset else ("timeline" if has_timing else "sequence")
+        dialogue_path = mix_dir / "dialogue-master.wav"
+        dialogue_report = render_timeline_to_wav(
+            source_items,
+            dialogue_path,
+            mode=effective_mode,
+            gap_ms=(delivery_preset.gap_ms if delivery_preset else 0),
+            crossfade_ms=effective_crossfade,
+            peak_policy="limit",
+            sample_rate=effective_rate,
+            target_lufs=(delivery_preset.target_lufs if delivery_preset else None),
+            loudness_range_lu=(delivery_preset.loudness_range_lu if delivery_preset else 7.0),
+            true_peak_dbfs=(delivery_preset.true_peak_dbfs if delivery_preset else -1.0),
+        )
+        total_frames = round(float(dialogue_report["duration_seconds"]) * effective_rate)
+        stem_reports: list[dict[str, Any]] = []
+        if include_role_stems:
+            stem_reports.extend(
+                render_grouped_stems(
+                    source_items,
+                    dialogue_report["placements"],
+                    stems_dir / "roles",
+                    group_key="speaker",
+                    filename_prefix="role",
+                    sample_rate=effective_rate,
+                    total_frames=total_frames,
+                )
+            )
+        if include_scene_stems:
+            stem_reports.extend(
+                render_grouped_stems(
+                    source_items,
+                    dialogue_report["placements"],
+                    stems_dir / "scenes",
+                    group_key="scene",
+                    filename_prefix="scene",
+                    sample_rate=effective_rate,
+                    total_frames=total_frames,
+                )
+            )
+
+        master_target = mix_dir / "master.wav"
+        if master_audio is not None:
+            master_source = audio_to_wav(master_audio, "production-master")
+            export_audio_path(master_source, master_target, audio_format="wav")
+            master_origin = "connected_master_audio"
+        else:
+            shutil.copy2(dialogue_path, master_target)
+            master_origin = "rendered_dialogue_master"
+
+        production_assets: list[dict[str, Any]] = []
+        for kind, value, filename in (
+            ("bgm", bgm_audio, "bgm.wav"),
+            ("room_tone", room_tone_audio, "room-tone.wav"),
+        ):
+            if value is None:
+                continue
+            source = audio_to_wav(value, f"production-{kind}")
+            target = assets_dir / filename
+            export_audio_path(source, target, audio_format="wav")
+            production_assets.append(
+                {
+                    "kind": kind,
+                    "path": target.relative_to(export_dir).as_posix(),
+                    "sha256": file_digest(target),
+                    "mixed_into_master_by_this_node": False,
+                }
+            )
+
+        srt, vtt, cues = build_batch_subtitles(source_items, dialogue_report["placements"])
+        srt_path = subtitles_dir / f"{project}.srt"
+        vtt_path = subtitles_dir / f"{project}.vtt"
+        srt_path.write_text(srt, encoding="utf-8")
+        vtt_path.write_text(vtt, encoding="utf-8")
+        original_subtitle_path: Path | None = None
+        if str(source_subtitles or "").strip():
+            extension = "vtt" if str(source_subtitles).lstrip().upper().startswith("WEBVTT") else "srt"
+            original_subtitle_path = subtitles_dir / f"source-original.{extension}"
+            original_subtitle_path.write_text(str(source_subtitles), encoding="utf-8")
+
+        source_manifest = None
+        source_manifest_path = Path(str(audio_batch.manifest_path or ""))
+        if source_manifest_path.is_file():
+            try:
+                source_manifest = load_manifest(source_manifest_path)
+            except ValueError:
+                # ProjectExchange and evidence batches legitimately use another JSON contract.
+                source_manifest = None
+        definition = manifest()
+        worker_code_revisions = sorted(
+            {
+                str((item.get("worker_report") or {}).get("code_revision"))
+                for item in source_items
+                if (item.get("worker_report") or {}).get("code_revision")
+            }
+        )
+        worker_model_revisions = sorted(
+            {
+                str((item.get("worker_report") or {}).get("model_revision"))
+                for item in source_items
+                if (item.get("worker_report") or {}).get("model_revision")
+            }
+        )
+        generated_files = sorted(path for path in export_dir.rglob("*") if path.is_file())
+        file_inventory = [
+            {
+                "path": path.relative_to(export_dir).as_posix(),
+                "bytes": path.stat().st_size,
+                "sha256": file_digest(path),
+            }
+            for path in generated_files
+        ]
+        manifest_path = export_dir / "production-manifest.json"
+        manifest_payload = {
+            "manifest_version": MANIFEST_VERSION,
+            "package_schema": "t8.firered.production-package.v1",
+            "project_name": project,
+            "created_at": now.isoformat(timespec="seconds"),
+            "source_manifest_path": audio_batch.manifest_path,
+            "source_manifest_sha256": (
+                file_digest(source_manifest_path) if source_manifest_path.is_file() else None
+            ),
+            "versions": {
+                "comfyui_node": NODE_VERSION,
+                "upstream_code_revision": definition["codeRevision"],
+                "upstream_model_revision": definition["modelRevision"],
+                "worker_code_revisions": worker_code_revisions,
+                "worker_model_revisions": worker_model_revisions,
+            },
+            "generation": {
+                "settings": (source_manifest or {}).get("settings"),
+                "model_identity": (source_manifest or {}).get("model_identity"),
+                "delivery_preset": delivery_preset.to_dict() if delivery_preset else None,
+                "sample_rate": effective_rate,
+                "timeline_mode": effective_mode,
+                "crossfade_ms": effective_crossfade,
+            },
+            "master": {
+                "path": master_target.relative_to(export_dir).as_posix(),
+                "sha256": file_digest(master_target),
+                "origin": master_origin,
+            },
+            "dialogue_master": {
+                "path": dialogue_path.relative_to(export_dir).as_posix(),
+                "sha256": file_digest(dialogue_path),
+                "render_report": dialogue_report,
+            },
+            "stems": [
+                {
+                    **report,
+                    "path": Path(report["path"]).relative_to(export_dir).as_posix(),
+                }
+                for report in stem_reports
+            ],
+            "production_assets": production_assets,
+            "subtitles": {
+                "srt": srt_path.relative_to(export_dir).as_posix(),
+                "vtt": vtt_path.relative_to(export_dir).as_posix(),
+                "source_original": (
+                    original_subtitle_path.relative_to(export_dir).as_posix()
+                    if original_subtitle_path is not None
+                    else None
+                ),
+                "cue_count": len(cues),
+                "timing": "actual_render_placements",
+            },
+            "source_items": [
+                {
+                    "line_id": item.get("line_id"),
+                    "speaker": item.get("speaker"),
+                    "scene": item.get("scene") or "",
+                    "text": item.get("text"),
+                    "sha256": source_hashes_before[str(item.get("line_id") or index)],
+                }
+                for index, item in enumerate(source_items, 1)
+            ],
+            "files": file_inventory,
+        }
+        write_manifest(manifest_path, manifest_payload)
+        source_hashes_after = {
+            str(item.get("line_id") or index): file_digest(item["output_path"])
+            for index, item in enumerate(source_items, 1)
+        }
+        sources_preserved = source_hashes_before == source_hashes_after
+        if not sources_preserved:
+            raise RuntimeError("制作包导出过程中源音频发生变化，已停止交付")
+
+        zip_path: Path | None = None
+        if create_zip:
+            zip_path = export_dir.parent / f"{export_dir.name}.zip"
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for path in sorted(export_dir.rglob("*")):
+                    if path.is_file():
+                        archive.write(path, path.relative_to(export_dir).as_posix())
+        preview_paths = [master_target, dialogue_path] + [Path(item["path"]) for item in stem_reports]
+        preview_paths.extend(assets_dir / Path(item["path"]).name for item in production_assets)
+        report = {
+            "manifest_path": str(manifest_path),
+            "zip_path": str(zip_path) if zip_path else "",
+            "output_directory": str(export_dir),
+            "master_origin": master_origin,
+            "role_stems": sum(1 for item in stem_reports if item["group_key"] == "speaker"),
+            "scene_stems": sum(1 for item in stem_reports if item["group_key"] == "scene"),
+            "production_assets": len(production_assets),
+            "subtitle_cues": len(cues),
+            "source_files_overwritten": False,
+            "source_hashes_preserved": sources_preserved,
+        }
+        return io.NodeOutput(
+            audio_batch,
+            wav_to_audio(master_target),
+            str(manifest_path),
+            str(zip_path) if zip_path else "",
+            _json(report),
+            ui=saved_audio_files_ui(preview_paths[:32]),
         )
 
 
@@ -2656,6 +3184,8 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioVoiceDesign,
             T8FireRedAudioSpeechEdit,
             T8FireRedAudioAcousticEdit,
+            T8FireRedAudioLocalRepairRange,
+            T8FireRedAudioLocalRepairApply,
             T8FireRedAudioReferenceQuality,
             T8FireRedAudioPrepareReference,
             T8FireRedAudioProjectExchange,
@@ -2669,6 +3199,7 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioBatchRetry,
             T8FireRedAudioAudioBatchSelect,
             T8FireRedAudioSaveAudioBatch,
+            T8FireRedAudioProductionPackage,
             T8FireRedAudioSaveAudio,
             T8FireRedAudioSaveSubtitle,
             T8FireRedAudioRuntimeControl,

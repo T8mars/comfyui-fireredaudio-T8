@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comfyui-fireredaudio-t8"
-version = "0.11.0"
+version = "0.12.0"
 description = "ComfyUI V3 nodes for FireRedAudio using an isolated Transformers 5.8 worker"
 readme = "README.md"
 requires-python = ">=3.10"

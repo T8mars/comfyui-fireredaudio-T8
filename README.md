@@ -1,6 +1,6 @@
 # comfyui-fireredaudio-T8
 
-FireRedAudio 的 33 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点菜单：
+FireRedAudio 的 36 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点菜单：
 
 `T8star-Aix / Audio / FireRedAudio`
 
@@ -16,6 +16,7 @@ FireRedAudio 的 33 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成�
 - 自然语言声音设计
 - 语义语音编辑
 - 严格模板和参数化两种音高、速度、音量声学编辑
+- 局部修复闭环：手工时间或定位 JSON 裁片 → 语义/声学编辑 → 等功率交叉淡化回填；保留源声道/采样率并输出原版/修复版 A/B 和哈希报告
 - 参考音频时长、响度、削波、静音、直流偏移质检
 - 另存 24 kHz 单声道的非破坏参考音频清理副本，可选静音裁剪、-23 LUFS 和语音高通，保留前后质检与处理记录
 - 可复用音色档案与 1–8 角色音色库
@@ -31,6 +32,7 @@ FireRedAudio 的 33 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成�
 - 成品逐条 ASR 回读、中文 CER/英文 WER、削波、静音和时长 QA
 - QA 失败 line ID 定向返修；支持固定/递增 Seed、多次尝试、独立返修文件和非破坏 AudioBatch/manifest 合并
 - AudioBatch 可按序号、line ID 或角色试听选择；成功 Take 可批量导出、原生下载并打包 ZIP
+- 分轨制作交付包：角色/场景等长对白分轨、Master、dialogue、BGM、room tone、实际 SRT/VTT、模型版本、参数与素材 SHA-256 一键 ZIP
 - WAV、FLAC、MP3、OGG 音频与 SRT、VTT、TXT、JSONL 安全保存；保存音频节点在 ComfyUI 结果区提供原生播放器/下载入口
 - 冷/热启动、分阶段耗时、RTF 和 CUDA 峰值显存性能报告
 - 模型校验、真实 GPU/空闲显存报告、缓存清理、显存释放和 Worker 停止
@@ -103,7 +105,7 @@ python scripts/download_models.py --target "D:\ComfyUI\models\TTS\FireRedAudio" 
 3. 可选连接 `FireRedAudio 生成参数`。
 4. TTS 输出连接 `FireRedAudio 保存音频`，可选择 WAV/FLAC/MP3/OGG。
 
-示例见 `example_workflows/ui` 和 `example_workflows/api`。`15_reference_cleanup` 演示参考音频质检后再生成不覆盖源文件的清理副本；`16_synchronized_ab` 演示两个候选同步起点、匹配响度并分别保存；`17_reference_asr_tts` 演示自动逐字稿驱动 TTS；`18_seed_audition` 演示多 Seed 试音；`19_long_audio_evidence` 演示定位结果直接生成证据片段；`20_creator_qa_repair_delivery` 演示分块批配音、QA 失败返修、试听选择、批量 ZIP 和最终混音交付。参考清理不会执行降噪、去混响或削波伪修复。
+示例见 `example_workflows/ui` 和 `example_workflows/api`。`15_reference_cleanup` 演示参考音频质检后再生成不覆盖源文件的清理副本；`16_synchronized_ab` 演示两个候选同步起点、匹配响度并分别保存；`17_reference_asr_tts` 演示自动逐字稿驱动 TTS；`18_seed_audition` 演示多 Seed 试音；`19_long_audio_evidence` 演示定位结果直接生成证据片段；`20_creator_qa_repair_delivery` 演示分块批配音、QA 失败返修、试听选择和批量 ZIP；`21_podcast_local_repair` 演示手工范围、语义编辑、回填与 A/B 保存；`22_production_package` 演示从项目交换 AudioBatch 导出角色/场景分轨和完整制作包。参考清理不会执行降噪、去混响或削波伪修复。
 
 长音频字幕是静音感知的分段级近似时间，不是词级强制对齐。批量配音和多 Seed 试音都使用 Worker `tts-batch`；批量配音默认每批 8 条并允许不同角色参考，在顺序卸载模式中先完成本批 latent，再统一切换解码器，减少逐句切换大模型。每条结果仍独立落盘、记录和恢复。
 
@@ -119,6 +121,8 @@ Load Audio → 音色档案 ├→ 音色库 → 角色脚本/SRT 预检 → 可
                                                               │失败 line ID
                                                               ▼
 脚本计划 + 音色库 + 原 AudioBatch ───────────────→ 定向返修 → 试听选择 / 批量 ZIP / 时间线
+
+原始长音频 → 局部修复范围 → 语义/声学编辑 → 局部修复回填 A/B → 分别试听/保存
 ```
 
 制作交付可继续连接：
@@ -131,6 +135,8 @@ Load Audio → 音色档案 ├→ 音色库 → 角色脚本/SRT 预检 → 可
 可恢复批量配音 ────────────────┐
 room tone ─────────────────────┼→ 时间线渲染 → 保存音频
 有声书/播客/视频对白交付预设 ───┘        └→ 同一交付预设
+
+AudioBatch + 可选 Master/BGM/room tone/字幕 → 分轨制作交付包 → Manifest + ZIP
 ```
 
 交叉淡化只作用于相邻对白的真实重叠区域；`sequence` 模式启用交叉淡化时，相邻重叠会替代顺序间隔。自动补空隙必须连接 room tone，渲染器只在没有对白覆盖的时间段循环填充，并在边缘加入短淡化，不会把背景声铺到对白上。
@@ -144,13 +150,19 @@ room tone ─────────────────────┼→ 
 ```text
 旁白：欢迎收听本期节目。
 [00:00:03,000 --> 00:00:06,000] 小夏：大家好，我是小夏。
+# 场景：访谈
+旁白：这一句会记录到“访谈”场景分轨。
 ```
 
-SRT 的正文可用 `[角色] 台词` 标记角色。JSON 可直接传数组，或传包含 `lines` 数组的对象；每项支持 `speaker`、`text`、`language`、`start_seconds`、`end_seconds`。
+SRT 的正文可用 `[角色] 台词` 标记角色。角色脚本支持 `# 场景：名称`、`# Scene: name` 或 `## 名称` 场景标题。JSON 可直接传数组，或传包含 `lines` 数组的对象；每项支持 `speaker`、`scene`、`text`、`language`、`start_seconds`、`end_seconds`。
 
 批量配音输出到 `ComfyUI/output/<subfolder>/<project_name>/`。`manifest.json` 会在每条成功或失败后原子更新；启用恢复后，只有台词、音色参考、生成参数和模型身份指纹均一致且 WAV 仍存在的条目才会命中缓存。未命中条目按 `batch_size` 分块进入 Worker `tts-batch`；报告保存每批真实 execution model 和性能数据。若 ComfyUI 中断当前批次，已完成并写入 manifest 的条目仍可在下次运行复用。
 
 `SpeechQA.failed_line_ids` 可直接连接“QA 失败项定向返修”。返修始终写入独立目录和 `repair-manifest.json`，不会覆盖原始或已通过音频；成功条目才会替换输出 AudioBatch 中对应 line ID。返修后的 AudioBatch 可连接“试听选择”“批量保存/下载”或时间线；批量保存会生成相对独立的交付目录、`export-manifest.json` 和可选 ZIP，结果区默认显示最多 16 条原生播放器/下载入口。
+
+“局部修复范围”可直接填写秒数，也可连接“长音频时间定位”的结构化 JSON 并按序号选择范围。两侧上下文会一起送入编辑模型并作为整体非破坏回填；“局部修复回填 A/B”会验证源 SHA-256，自动把编辑片段重采样/适配回原声道数，在替换区域内部做等功率边缘混合，源文件不会被覆盖。编辑片段时长变化会明确写入报告，不会偷偷拉伸。
+
+“分轨制作交付包”使用时间线的实际落点生成 SRT/VTT，角色和场景分轨会用静音补齐到同一 Master 终点，便于直接导入 DAW。连接的外部 Master、BGM 和 room tone 会原样收进包；该节点不会假装替用户完成未指定的 BGM 混音，Manifest 会明确记录每项素材是否由本节点混入。ZIP 同时保存上游代码/模型 revision、Worker revision、生成参数、交付预设和全部产物 SHA-256。
 
 ## 真模型长跑验收
 

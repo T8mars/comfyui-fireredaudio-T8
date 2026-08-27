@@ -374,6 +374,124 @@ class ProductionWorkflowTests(unittest.TestCase):
         self.assertLess(metrics["silence_ratio"], 0.1)
         json.dumps(metrics)
 
+    def test_role_script_scene_headings_survive_into_plan(self) -> None:
+        plan = PRODUCTION.parse_script(
+            "# 场景：开场\n旁白：第一句\n## 冲突\nAlice: Second line",
+            "role_script",
+            self.bank,
+        )
+        self.assertTrue(plan.valid)
+        self.assertEqual([line.scene for line in plan.lines], ["开场", "冲突"])
+
+    def test_local_repair_preserves_source_format_and_untouched_samples(self) -> None:
+        source = self.root / "stereo-48k.wav"
+        clip = self.root / "repair-clip.wav"
+        edited = self.root / "edited-24k.wav"
+        output = self.root / "repaired.wav"
+        write_stereo_tone(source, seconds=0.5, sample_rate=48000)
+        write_tone(edited, seconds=0.12, sample_rate=24000, frequency=880.0)
+        source_hash = PRODUCTION.file_digest(source)
+        crop = PRODUCTION.crop_wav_region(
+            source,
+            clip,
+            start_seconds=0.15,
+            end_seconds=0.30,
+            context_ms=25,
+        )
+        report = PRODUCTION.replace_wav_region(
+            source,
+            edited,
+            output,
+            replace_start_frame=crop["replace_start_frame"],
+            replace_end_frame=crop["replace_end_frame"],
+            crossfade_ms=20,
+            expected_source_sha256=source_hash,
+        )
+        self.assertEqual(PRODUCTION.file_digest(source), source_hash)
+        self.assertTrue(report["source_preserved"])
+        self.assertEqual(report["sample_rate"], 48000)
+        self.assertEqual(report["channels"], 2)
+        self.assertEqual(report["crossfade_curve"], "equal_power")
+        self.assertTrue(report["edited_resampled"])
+        with wave.open(str(source), "rb") as reader:
+            source_frames = reader.readframes(reader.getnframes())
+        with wave.open(str(output), "rb") as reader:
+            self.assertEqual(reader.getframerate(), 48000)
+            self.assertEqual(reader.getnchannels(), 2)
+            output_frames = reader.readframes(reader.getnframes())
+        frame_bytes = 4
+        start_byte = int(crop["replace_start_frame"]) * frame_bytes
+        self.assertEqual(output_frames[:start_byte], source_frames[:start_byte])
+        write_stereo_tone(source, seconds=0.5, sample_rate=48000)
+        with self.assertRaisesRegex(ValueError, "已变化"):
+            PRODUCTION.replace_wav_region(
+                source,
+                edited,
+                self.root / "must-not-write.wav",
+                replace_start_frame=crop["replace_start_frame"],
+                replace_end_frame=crop["replace_end_frame"],
+                expected_source_sha256="0" * 64,
+            )
+
+    def test_grouped_role_and_scene_stems_share_master_length(self) -> None:
+        first = self.root / "first.wav"
+        second = self.root / "second.wav"
+        write_stereo_tone(first, seconds=0.10, sample_rate=24000)
+        write_tone(second, seconds=0.10, sample_rate=24000, frequency=770.0)
+        items = [
+            {
+                "line_id": "line-a",
+                "speaker": "旁白",
+                "scene": "开场",
+                "text": "第一句",
+                "status": "complete",
+                "output_path": str(first),
+                "start_seconds": 0.0,
+            },
+            {
+                "line_id": "line-b",
+                "speaker": "角色",
+                "scene": "冲突",
+                "text": "第二句",
+                "status": "complete",
+                "output_path": str(second),
+                "start_seconds": 0.25,
+            },
+        ]
+        master = self.root / "master.wav"
+        master_report = PRODUCTION.render_timeline_to_wav(
+            items, master, mode="timeline", sample_rate=24000
+        )
+        total_frames = round(master_report["duration_seconds"] * 24000)
+        roles = PRODUCTION.render_grouped_stems(
+            items,
+            master_report["placements"],
+            self.root / "role-stems",
+            group_key="speaker",
+            filename_prefix="role",
+            sample_rate=24000,
+            total_frames=total_frames,
+        )
+        scenes = PRODUCTION.render_grouped_stems(
+            items,
+            master_report["placements"],
+            self.root / "scene-stems",
+            group_key="scene",
+            filename_prefix="scene",
+            sample_rate=24000,
+            total_frames=total_frames,
+        )
+        self.assertEqual(len(roles), 2)
+        self.assertEqual(len(scenes), 2)
+        for stem in roles + scenes:
+            with wave.open(stem["path"], "rb") as reader:
+                self.assertEqual(reader.getnframes(), total_frames)
+                self.assertEqual(reader.getframerate(), 24000)
+        srt, vtt, cues = PRODUCTION.build_batch_subtitles(items, master_report["placements"])
+        self.assertEqual(len(cues), 2)
+        self.assertIn("[旁白] 第一句", srt)
+        self.assertTrue(vtt.startswith("WEBVTT"))
+
 
 class ExampleWorkflowTests(unittest.TestCase):
     def test_production_examples_are_well_formed_and_linked(self) -> None:
@@ -534,6 +652,35 @@ class ExampleWorkflowTests(unittest.TestCase):
         for _link_id, source, _slot, target, _target_slot, _kind in ui["links"]:
             self.assertIn(source, node_ids)
             self.assertIn(target, node_ids)
+
+    def test_v012_postproduction_workflows_cover_local_repair_and_delivery_package(self) -> None:
+        repair = json.loads(
+            (ROOT / "example_workflows" / "api" / "21_podcast_local_repair.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        package = json.loads(
+            (ROOT / "example_workflows" / "api" / "22_production_package.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        repair_types = {value["class_type"] for value in repair.values()}
+        self.assertTrue(
+            {
+                "T8_FireRedAudio_LocalRepairRange",
+                "T8_FireRedAudio_SpeechEdit",
+                "T8_FireRedAudio_LocalRepairApply",
+                "T8_FireRedAudio_SaveAudio",
+            }.issubset(repair_types)
+        )
+        self.assertEqual(repair["5"]["inputs"]["audio"], ["4", 1])
+        self.assertEqual(repair["6"]["inputs"]["repair_plan"], ["4", 2])
+        package_types = {value["class_type"] for value in package.values()}
+        self.assertIn("T8_FireRedAudio_ProductionPackage", package_types)
+        self.assertEqual(package["6"]["inputs"]["audio_batch"], ["1", 2])
+        self.assertTrue(package["6"]["inputs"]["include_role_stems"])
+        self.assertTrue(package["6"]["inputs"]["include_scene_stems"])
+        self.assertTrue(package["6"]["inputs"]["create_zip"])
 
 
 class EvidenceClipTests(unittest.TestCase):

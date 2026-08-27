@@ -319,6 +319,43 @@ def build() -> None:
         "15": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["14", 0], "audio_format": "wav", "filename_prefix": "creator-loop-master", "subfolder": "fireredaudio/renders"}},
     })
 
+    repair_source = node(2, "LoadAudio", [60, 430], ["podcast_source.wav", None, None], [], [out("AUDIO", "AUDIO", [2])], [300, 170])
+    repair_settings = node(3, "T8_FireRedAudio_GenerationSettings", [470, 70], ["balanced", 42, 750, 6, 512, 10, 2.0], [], [out("settings", "T8_FIREREDAUDIO_SETTINGS", [6])], [320, 280])
+    repair_range = node(4, "T8_FireRedAudio_LocalRepairRange", [450, 410], ["manual", 2.0, 5.0, 1, 250], [port("audio", "AUDIO", 2), port("locator_json", "STRING")], [out("original_audio", "AUDIO"), out("repair_clip", "AUDIO", [3], slot_index=1), out("repair_plan", "T8_FIREREDAUDIO_LOCAL_REPAIR_PLAN", [4], slot_index=2), out("range_report", "STRING", slot_index=3)], [450, 360])
+    repair_edit = node(5, "T8_FireRedAudio_SpeechEdit", [980, 300], ["replace the last sentence with: 这是一段已经修复的台词", "semantic"], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("audio", "AUDIO", 3), port("settings", "T8_FIREREDAUDIO_SETTINGS", 6)], [out("audio", "AUDIO", [7]), out("edited_text", "STRING"), out("report", "STRING", slot_index=2)], [470, 320])
+    repair_apply = node(6, "T8_FireRedAudio_LocalRepairApply", [1530, 350], [40], [port("repair_plan", "T8_FIREREDAUDIO_LOCAL_REPAIR_PLAN", 4), port("edited_clip", "AUDIO", 7)], [out("original_audio", "AUDIO", [8]), out("repaired_audio", "AUDIO", [9], slot_index=1), out("replacement_report", "STRING", slot_index=2)], [460, 300])
+    repair_save_a = node(7, "T8_FireRedAudio_SaveAudio", [2070, 250], ["wav", "local-repair-A-original", "fireredaudio/repairs"], [port("audio", "AUDIO", 8)], [out("saved_path", "STRING"), out("audio", "AUDIO", slot_index=1)], [390, 240])
+    repair_save_b = node(8, "T8_FireRedAudio_SaveAudio", [2070, 560], ["wav", "local-repair-B-repaired", "fireredaudio/repairs"], [port("audio", "AUDIO", 9)], [out("saved_path", "STRING"), out("audio", "AUDIO", slot_index=1)], [390, 240])
+    repair_links = [[1, 1, 0, 5, 0, "T8_FIREREDAUDIO_MODEL"], [2, 2, 0, 4, 0, "AUDIO"], [3, 4, 1, 5, 1, "AUDIO"], [4, 4, 2, 6, 0, "T8_FIREREDAUDIO_LOCAL_REPAIR_PLAN"], [6, 3, 0, 5, 2, "T8_FIREREDAUDIO_SETTINGS"], [7, 5, 0, 6, 1, "AUDIO"], [8, 6, 0, 7, 0, "AUDIO"], [9, 6, 1, 8, 0, "AUDIO"]]
+    save("ui_21_podcast_local_repair", workflow([model_node([1]), repair_source, repair_settings, repair_range, repair_edit, repair_apply, repair_save_a, repair_save_b], repair_links))
+    save("api_21_podcast_local_repair", {
+        "1": {"class_type": "T8_FireRedAudio_ModelLoader", "inputs": {"model_name": "FireRedAudio", "custom_model_path": "", "device": "auto", "memory_mode": "auto", "acceleration_mode": "auto_safe", "profile": "full", "worker_mode": "managed", "runtime_python": "", "worker_url": "", "worker_token": "", "verify_hashes": False, "release_after_run": False}},
+        "2": {"class_type": "LoadAudio", "inputs": {"audio": "podcast_source.wav"}},
+        "3": {"class_type": "T8_FireRedAudio_GenerationSettings", "inputs": {"quality_preset": "balanced", "seed": 42, "max_new_audio_steps": 750, "min_new_audio_steps": 6, "max_new_text_tokens": 512, "n_timesteps": 10, "inference_cfg": 2.0}},
+        "4": {"class_type": "T8_FireRedAudio_LocalRepairRange", "inputs": {"audio": ["2", 0], "range_mode": "manual", "start_seconds": 2.0, "end_seconds": 5.0, "range_index": 1, "context_ms": 250}},
+        "5": {"class_type": "T8_FireRedAudio_SpeechEdit", "inputs": {"model": ["1", 0], "audio": ["4", 1], "instruction": "replace the last sentence with: 这是一段已经修复的台词", "edit_type": "semantic", "settings": ["3", 0]}},
+        "6": {"class_type": "T8_FireRedAudio_LocalRepairApply", "inputs": {"repair_plan": ["4", 2], "edited_clip": ["5", 0], "crossfade_ms": 40}},
+        "7": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["6", 0], "audio_format": "wav", "filename_prefix": "local-repair-A-original", "subfolder": "fireredaudio/repairs"}},
+        "8": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["6", 1], "audio_format": "wav", "filename_prefix": "local-repair-B-repaired", "subfolder": "fireredaudio/repairs"}},
+    })
+
+    package_exchange = node(1, "T8_FireRedAudio_ProjectExchange", [60, 340], ["project-exchange.json"], [], [out("voice_bank", "T8_FIREREDAUDIO_VOICE_BANK"), out("script_plan", "T8_FIREREDAUDIO_SCRIPT_PLAN", slot_index=1), out("audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", [1], slot_index=2), out("report", "STRING", slot_index=3)], [410, 250])
+    package_master = node(2, "LoadAudio", [60, 650], ["approved_master.wav", None, None], [], [out("AUDIO", "AUDIO", [2])], [300, 170])
+    package_bgm = node(3, "LoadAudio", [430, 650], ["bgm.wav", None, None], [], [out("AUDIO", "AUDIO", [3])], [300, 170])
+    package_room = node(4, "LoadAudio", [800, 650], ["room_tone.wav", None, None], [], [out("AUDIO", "AUDIO", [4])], [300, 170])
+    package_preset = node(5, "T8_FireRedAudio_DeliveryPreset", [520, 130], ["podcast"], [], [out("delivery_preset", "T8_FIREREDAUDIO_DELIVERY_PRESET", [5]), out("preset_report", "STRING")], [390, 190])
+    package_node = node(6, "T8_FireRedAudio_ProductionPackage", [1250, 320], ["podcast-delivery", "fireredaudio/deliveries", 48000, 40, True, True, True], [port("audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", 1), port("master_audio", "AUDIO", 2), port("bgm_audio", "AUDIO", 3), port("room_tone_audio", "AUDIO", 4), port("source_subtitles", "STRING"), port("delivery_preset", "T8_FIREREDAUDIO_DELIVERY_PRESET", 5)], [out("audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH"), out("master_audio", "AUDIO", slot_index=1), out("manifest_path", "STRING", slot_index=2), out("zip_path", "STRING", slot_index=3), out("package_report", "STRING", slot_index=4)], [520, 440])
+    package_links = [[1, 1, 2, 6, 0, "T8_FIREREDAUDIO_AUDIO_BATCH"], [2, 2, 0, 6, 1, "AUDIO"], [3, 3, 0, 6, 2, "AUDIO"], [4, 4, 0, 6, 3, "AUDIO"], [5, 5, 0, 6, 5, "T8_FIREREDAUDIO_DELIVERY_PRESET"]]
+    save("ui_22_production_package", workflow([package_exchange, package_master, package_bgm, package_room, package_preset, package_node], package_links))
+    save("api_22_production_package", {
+        "1": {"class_type": "T8_FireRedAudio_ProjectExchange", "inputs": {"exchange_path": "project-exchange.json"}},
+        "2": {"class_type": "LoadAudio", "inputs": {"audio": "approved_master.wav"}},
+        "3": {"class_type": "LoadAudio", "inputs": {"audio": "bgm.wav"}},
+        "4": {"class_type": "LoadAudio", "inputs": {"audio": "room_tone.wav"}},
+        "5": {"class_type": "T8_FireRedAudio_DeliveryPreset", "inputs": {"preset_name": "podcast"}},
+        "6": {"class_type": "T8_FireRedAudio_ProductionPackage", "inputs": {"audio_batch": ["1", 2], "project_name": "podcast-delivery", "subfolder": "fireredaudio/deliveries", "sample_rate": 48000, "crossfade_ms": 40, "include_role_stems": True, "include_scene_stems": True, "create_zip": True, "master_audio": ["2", 0], "bgm_audio": ["3", 0], "room_tone_audio": ["4", 0], "delivery_preset": ["5", 0]}},
+    })
+
 
 if __name__ == "__main__":
     build()

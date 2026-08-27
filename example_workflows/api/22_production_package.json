@@ -1,0 +1,64 @@
+{
+  "1": {
+    "class_type": "T8_FireRedAudio_ProjectExchange",
+    "inputs": {
+      "exchange_path": "project-exchange.json"
+    }
+  },
+  "2": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "approved_master.wav"
+    }
+  },
+  "3": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "bgm.wav"
+    }
+  },
+  "4": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "room_tone.wav"
+    }
+  },
+  "5": {
+    "class_type": "T8_FireRedAudio_DeliveryPreset",
+    "inputs": {
+      "preset_name": "podcast"
+    }
+  },
+  "6": {
+    "class_type": "T8_FireRedAudio_ProductionPackage",
+    "inputs": {
+      "audio_batch": [
+        "1",
+        2
+      ],
+      "project_name": "podcast-delivery",
+      "subfolder": "fireredaudio/deliveries",
+      "sample_rate": 48000,
+      "crossfade_ms": 40,
+      "include_role_stems": true,
+      "include_scene_stems": true,
+      "create_zip": true,
+      "master_audio": [
+        "2",
+        0
+      ],
+      "bgm_audio": [
+        "3",
+        0
+      ],
+      "room_tone_audio": [
+        "4",
+        0
+      ],
+      "delivery_preset": [
+        "5",
+        0
+      ]
+    }
+  }
+}

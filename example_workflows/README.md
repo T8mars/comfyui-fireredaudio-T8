@@ -20,8 +20,10 @@
 - `18_seed_audition`：同一句生成 4 个 Seed 候选，ASR 回读质检后输出推荐 Take 与全部候选 manifest
 - `19_long_audio_evidence`：长音频内容定位后直接裁切证据片段、输出剪辑清单并保存首个片段
 - `20_creator_qa_repair_delivery`：多角色分块批配音、逐条 QA、失败 line ID 定向返修、人工试听选择、批量下载 ZIP 与最终混音交付
+- `21_podcast_local_repair`：手工选择时间范围、语义编辑片段、等功率回填，并分别保存原版/修复版 A/B
+- `22_production_package`：从项目交换 AudioBatch 导出角色/场景分轨、Master、BGM、room tone、SRT/VTT、Manifest 与一键 ZIP
 
-`ui` 目录可直接拖入 ComfyUI；`api` 目录用于 `/prompt` API。请先把示例引用的 `voice_reference.wav`、`comparison.wav`、`candidate_a.wav`、`candidate_b.wav`、`room_tone.wav`、`long_recording.wav`、`narrator_reference.wav` 或 `actor_reference.wav` 上传到 ComfyUI input，并按实际扫描结果修改模型加载器中的模型名称。
+`ui` 目录可直接拖入 ComfyUI；`api` 目录用于 `/prompt` API。请先把示例引用的 `voice_reference.wav`、`comparison.wav`、`candidate_a.wav`、`candidate_b.wav`、`room_tone.wav`、`long_recording.wav`、`podcast_source.wav`、`approved_master.wav`、`bgm.wav`、`narrator_reference.wav` 或 `actor_reference.wav` 上传到 ComfyUI input，并按实际扫描结果修改模型加载器中的模型名称。`22_production_package` 还需要把桌面整合包导出的 `project-exchange.json` 路径改成当前机器上的实际路径。
 
 V3 Autogrow 输入在 `/prompt` API 中必须使用点路径，例如 `profiles.profile_0` 或 `audios.audio_0`；示例 API 已按此格式提供，不能改成未分组的 `profile_0`/`audio_0`。
 

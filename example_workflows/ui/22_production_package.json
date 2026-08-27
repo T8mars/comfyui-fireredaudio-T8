@@ -1,0 +1,340 @@
+{
+  "last_node_id": 6,
+  "last_link_id": 5,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "T8_FireRedAudio_ProjectExchange",
+      "pos": [
+        60,
+        340
+      ],
+      "size": [
+        410,
+        250
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "voice_bank",
+          "type": "T8_FIREREDAUDIO_VOICE_BANK",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "script_plan",
+          "type": "T8_FIREREDAUDIO_SCRIPT_PLAN",
+          "links": [],
+          "slot_index": 1
+        },
+        {
+          "name": "audio_batch",
+          "type": "T8_FIREREDAUDIO_AUDIO_BATCH",
+          "links": [
+            1
+          ],
+          "slot_index": 2
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 3
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_ProjectExchange"
+      },
+      "widgets_values": [
+        "project-exchange.json"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LoadAudio",
+      "pos": [
+        60,
+        650
+      ],
+      "size": [
+        300,
+        170
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        "approved_master.wav",
+        null,
+        null
+      ]
+    },
+    {
+      "id": 3,
+      "type": "LoadAudio",
+      "pos": [
+        430,
+        650
+      ],
+      "size": [
+        300,
+        170
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        "bgm.wav",
+        null,
+        null
+      ]
+    },
+    {
+      "id": 4,
+      "type": "LoadAudio",
+      "pos": [
+        800,
+        650
+      ],
+      "size": [
+        300,
+        170
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        "room_tone.wav",
+        null,
+        null
+      ]
+    },
+    {
+      "id": 5,
+      "type": "T8_FireRedAudio_DeliveryPreset",
+      "pos": [
+        520,
+        130
+      ],
+      "size": [
+        390,
+        190
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "delivery_preset",
+          "type": "T8_FIREREDAUDIO_DELIVERY_PRESET",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "preset_report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_DeliveryPreset"
+      },
+      "widgets_values": [
+        "podcast"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "T8_FireRedAudio_ProductionPackage",
+      "pos": [
+        1250,
+        320
+      ],
+      "size": [
+        520,
+        440
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio_batch",
+          "type": "T8_FIREREDAUDIO_AUDIO_BATCH",
+          "link": 1
+        },
+        {
+          "name": "master_audio",
+          "type": "AUDIO",
+          "link": 2
+        },
+        {
+          "name": "bgm_audio",
+          "type": "AUDIO",
+          "link": 3
+        },
+        {
+          "name": "room_tone_audio",
+          "type": "AUDIO",
+          "link": 4
+        },
+        {
+          "name": "source_subtitles",
+          "type": "STRING"
+        },
+        {
+          "name": "delivery_preset",
+          "type": "T8_FIREREDAUDIO_DELIVERY_PRESET",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio_batch",
+          "type": "T8_FIREREDAUDIO_AUDIO_BATCH",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "master_audio",
+          "type": "AUDIO",
+          "links": [],
+          "slot_index": 1
+        },
+        {
+          "name": "manifest_path",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 2
+        },
+        {
+          "name": "zip_path",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 3
+        },
+        {
+          "name": "package_report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 4
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_ProductionPackage"
+      },
+      "widgets_values": [
+        "podcast-delivery",
+        "fireredaudio/deliveries",
+        48000,
+        40,
+        true,
+        true,
+        true
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      2,
+      6,
+      0,
+      "T8_FIREREDAUDIO_AUDIO_BATCH"
+    ],
+    [
+      2,
+      2,
+      0,
+      6,
+      1,
+      "AUDIO"
+    ],
+    [
+      3,
+      3,
+      0,
+      6,
+      2,
+      "AUDIO"
+    ],
+    [
+      4,
+      4,
+      0,
+      6,
+      3,
+      "AUDIO"
+    ],
+    [
+      5,
+      5,
+      0,
+      6,
+      5,
+      "T8_FIREREDAUDIO_DELIVERY_PRESET"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9,
+      "offset": [
+        80,
+        80
+      ]
+    }
+  },
+  "version": 0.4
+}

@@ -66,6 +66,31 @@ class DeliveryPreset:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class LocalRepairPlan:
+    """Immutable hand-off between region selection, model editing and splice-back."""
+
+    source_path: str
+    source_sha256: str
+    sample_rate: int
+    channels: int
+    source_frames: int
+    requested_start_seconds: float
+    requested_end_seconds: float
+    replace_start_frame: int
+    replace_end_frame: int
+    context_ms: int
+    range_source: str
+    range_label: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["replace_start_seconds"] = self.replace_start_frame / self.sample_rate
+        data["replace_end_seconds"] = self.replace_end_frame / self.sample_rate
+        data["source_duration_seconds"] = self.source_frames / self.sample_rate
+        return data
+
+
 DELIVERY_PRESETS: dict[str, DeliveryPreset] = {
     "audiobook": DeliveryPreset(
         name="audiobook",
