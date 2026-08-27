@@ -1,6 +1,6 @@
 {
-  "last_node_id": 5,
-  "last_link_id": 4,
+  "last_node_id": 7,
+  "last_link_id": 8,
   "nodes": [
     {
       "id": 1,
@@ -22,7 +22,8 @@
           "name": "model",
           "type": "T8_FIREREDAUDIO_MODEL",
           "links": [
-            1
+            1,
+            5
           ],
           "slot_index": 0
         },
@@ -56,7 +57,7 @@
       "type": "LoadAudio",
       "pos": [
         60,
-        450
+        470
       ],
       "size": [
         300,
@@ -87,17 +88,74 @@
     },
     {
       "id": 3,
+      "type": "T8_FireRedAudio_ReferenceTranscript",
+      "pos": [
+        440,
+        400
+      ],
+      "size": [
+        420,
+        240
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "T8_FIREREDAUDIO_MODEL",
+          "link": 1
+        },
+        {
+          "name": "reference_audio",
+          "type": "AUDIO",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "reference_audio",
+          "type": "AUDIO",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "transcript",
+          "type": "STRING",
+          "links": [
+            4
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_ReferenceTranscript"
+      },
+      "widgets_values": [
+        512
+      ]
+    },
+    {
+      "id": 4,
       "type": "T8_FireRedAudio_GenerationSettings",
       "pos": [
         470,
-        80
+        70
       ],
       "size": [
         320,
         280
       ],
       "flags": {},
-      "order": 2,
+      "order": 3,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -105,7 +163,7 @@
           "name": "settings",
           "type": "T8_FIREREDAUDIO_SETTINGS",
           "links": [
-            3
+            5
           ],
           "slot_index": 0
         }
@@ -124,34 +182,39 @@
       ]
     },
     {
-      "id": 4,
+      "id": 5,
       "type": "T8_FireRedAudio_TTS",
       "pos": [
-        850,
-        180
+        960,
+        250
       ],
       "size": [
-        390,
-        330
+        440,
+        350
       ],
       "flags": {},
-      "order": 3,
+      "order": 4,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "T8_FIREREDAUDIO_MODEL",
-          "link": 1
+          "link": 5
         },
         {
           "name": "prompt_audio",
           "type": "AUDIO",
-          "link": 2
+          "link": 3
+        },
+        {
+          "name": "prompt_text",
+          "type": "STRING",
+          "link": 4
         },
         {
           "name": "settings",
           "type": "T8_FIREREDAUDIO_SETTINGS",
-          "link": 3
+          "link": 6
         }
       ],
       "outputs": [
@@ -159,15 +222,17 @@
           "name": "audio",
           "type": "AUDIO",
           "links": [
-            4
+            7
           ],
           "slot_index": 0
         },
         {
           "name": "report",
           "type": "STRING",
-          "links": [],
-          "slot_index": 0
+          "links": [
+            8
+          ],
+          "slot_index": 1
         },
         {
           "name": "reference_transcript",
@@ -180,46 +245,113 @@
         "Node name for S&R": "T8_FireRedAudio_TTS"
       },
       "widgets_values": [
-        "同时，他强调微调要科学有序。",
-        "欢迎使用 FireRedAudio，来自 T8star-Aix。",
+        "欢迎使用自动逐字稿驱动的声音克隆。",
         "zh",
         true
       ]
     },
     {
-      "id": 5,
-      "type": "SaveAudio",
+      "id": 6,
+      "type": "T8_FireRedAudio_SaveAudio",
       "pos": [
-        1300,
-        180
+        1480,
+        190
       ],
       "size": [
-        280,
-        120
+        390,
+        240
       ],
       "flags": {},
-      "order": 4,
+      "order": 5,
       "mode": 0,
       "inputs": [
         {
           "name": "audio",
           "type": "AUDIO",
-          "link": 4
+          "link": 7
         }
       ],
       "outputs": [
         {
+          "name": "saved_path",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        },
+        {
           "name": "audio",
           "type": "AUDIO",
           "links": [],
-          "slot_index": 0
+          "slot_index": 1
         }
       ],
       "properties": {
-        "Node name for S&R": "SaveAudio"
+        "Node name for S&R": "T8_FireRedAudio_SaveAudio"
       },
       "widgets_values": [
+        "wav",
+        "asr-reference-tts",
         "fireredaudio/tts"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "T8_FireRedAudio_PerformanceReport",
+      "pos": [
+        1480,
+        520
+      ],
+      "size": [
+        430,
+        280
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "generation_report",
+          "type": "STRING",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "summary",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "performance_json",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 1
+        },
+        {
+          "name": "rtf",
+          "type": "FLOAT",
+          "links": [],
+          "slot_index": 2
+        },
+        {
+          "name": "total_seconds",
+          "type": "FLOAT",
+          "links": [],
+          "slot_index": 3
+        },
+        {
+          "name": "peak_vram_gib",
+          "type": "FLOAT",
+          "links": [],
+          "slot_index": 4
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "T8_FireRedAudio_PerformanceReport"
+      },
+      "widgets_values": [
+        1.0
       ]
     }
   ],
@@ -228,7 +360,7 @@
       1,
       1,
       0,
-      4,
+      3,
       0,
       "T8_FIREREDAUDIO_MODEL"
     ],
@@ -236,7 +368,7 @@
       2,
       2,
       0,
-      4,
+      3,
       1,
       "AUDIO"
     ],
@@ -244,17 +376,49 @@
       3,
       3,
       0,
-      4,
-      2,
-      "T8_FIREREDAUDIO_SETTINGS"
+      5,
+      1,
+      "AUDIO"
     ],
     [
       4,
-      4,
+      3,
+      1,
+      5,
+      2,
+      "STRING"
+    ],
+    [
+      5,
+      1,
       0,
       5,
       0,
+      "T8_FIREREDAUDIO_MODEL"
+    ],
+    [
+      6,
+      4,
+      0,
+      5,
+      3,
+      "T8_FIREREDAUDIO_SETTINGS"
+    ],
+    [
+      7,
+      5,
+      0,
+      6,
+      0,
       "AUDIO"
+    ],
+    [
+      8,
+      5,
+      1,
+      7,
+      0,
+      "STRING"
     ]
   ],
   "groups": [],

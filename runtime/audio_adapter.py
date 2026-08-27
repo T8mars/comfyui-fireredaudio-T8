@@ -128,6 +128,33 @@ def save_text_file(
     return target
 
 
+def saved_audio_ui(path: str | Path) -> dict:
+    """Return ComfyUI's native saved-audio descriptor for an existing output file."""
+    target = Path(path).resolve()
+    try:
+        import folder_paths
+
+        root = Path(folder_paths.get_output_directory()).resolve()
+    except Exception:
+        root = (Path.cwd() / "output").resolve()
+    try:
+        relative = target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("只有 ComfyUI output 目录内的音频可以注册为下载资产") from exc
+    subfolder = relative.parent.as_posix()
+    if subfolder == ".":
+        subfolder = ""
+    return {
+        "audio": [
+            {
+                "filename": relative.name,
+                "subfolder": subfolder,
+                "type": "output",
+            }
+        ]
+    }
+
+
 def _safe_output_dir(subfolder: str) -> Path:
     try:
         import folder_paths

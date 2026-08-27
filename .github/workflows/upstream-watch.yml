@@ -1,0 +1,67 @@
+name: upstream-watch
+
+on:
+  schedule:
+    - cron: "23 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-revisions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compare pinned code and model revisions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/check_upstream_revisions.py --output upstream-report.json
+      - name: Open or update compatibility audit issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('upstream-report.json', 'utf8'));
+            if (!report.updates_available) {
+              core.info('Pinned FireRedAudio code and model revisions are current.');
+              return;
+            }
+            const title = '[upstream-watch] FireRedAudio revision compatibility audit';
+            const body = [
+              'Upstream revisions changed. This is an audit reminder, not an automatic upgrade.',
+              '',
+              `- Code: \`${report.code.pinned}\` → \`${report.code.latest}\` (${report.code.changed ? 'changed' : 'unchanged'})`,
+              `- Model: \`${report.model.pinned}\` → \`${report.model.latest}\` (${report.model.changed ? 'changed' : 'unchanged'})`,
+              '',
+              `Code diff: ${report.code.compare_url}`,
+              `Model commits: ${report.model.commits_url}`,
+              '',
+              'Before changing the pinned manifest, run schema, host-compatibility and real-model smoke validation.'
+            ].join('\n');
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            });
+            const existing = issues.find(issue => issue.title === title);
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body
+              });
+            }

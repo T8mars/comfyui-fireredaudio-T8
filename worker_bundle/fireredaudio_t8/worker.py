@@ -61,6 +61,11 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
             route = self.path.rstrip("/")
             if route == "/v1/infer":
                 result = self.server.runtime.infer(payload)
+            elif route == "/v1/infer/tts-batch":
+                requests = payload.get("requests")
+                if not isinstance(requests, list):
+                    raise ValueError("批量 TTS requests 必须是数组")
+                result = self.server.runtime.infer_tts_batch(requests)
             elif route == "/v1/model/load":
                 result = self.server.runtime.load(
                     payload["model_root"],

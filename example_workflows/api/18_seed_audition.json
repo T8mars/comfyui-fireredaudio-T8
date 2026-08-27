@@ -4,7 +4,7 @@
     "inputs": {
       "model_name": "FireRedAudio",
       "custom_model_path": "",
-      "device": "cuda:0",
+      "device": "auto",
       "memory_mode": "auto",
       "acceleration_mode": "auto_safe",
       "profile": "full",
@@ -35,7 +35,7 @@
     }
   },
   "4": {
-    "class_type": "T8_FireRedAudio_TTS",
+    "class_type": "T8_FireRedAudio_SeedAudition",
     "inputs": {
       "model": [
         "1",
@@ -45,10 +45,14 @@
         "2",
         0
       ],
-      "prompt_text": "同时，他强调微调要科学有序。",
-      "target_text": "欢迎使用 FireRedAudio，来自 T8star-Aix。",
+      "prompt_text": "",
+      "target_text": "请从多个候选中选择最自然的一条。",
       "language": "zh",
-      "auto_transcribe_reference": true,
+      "seed_start": 42,
+      "take_count": 4,
+      "run_asr_qa": true,
+      "project_name": "narrator-audition",
+      "subfolder": "fireredaudio/auditions",
       "settings": [
         "3",
         0
@@ -56,13 +60,15 @@
     }
   },
   "5": {
-    "class_type": "SaveAudio",
+    "class_type": "T8_FireRedAudio_SaveAudio",
     "inputs": {
       "audio": [
         "4",
         0
       ],
-      "filename_prefix": "fireredaudio/tts"
+      "audio_format": "wav",
+      "filename_prefix": "recommended-take",
+      "subfolder": "fireredaudio/auditions"
     }
   }
 }

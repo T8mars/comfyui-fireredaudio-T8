@@ -18,8 +18,12 @@ jobs:
         include:
           - python: "3.10"
             transformers: "4.52.1"
+          - python: "3.11"
+            transformers: "4.57.6"
           - python: "3.12"
             transformers: "4.57.6"
+          - python: "3.13"
+            transformers: "5.0.0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,9 +34,12 @@ jobs:
       - name: Verify package metadata and sources
         shell: pwsh
         run: |
+          $before = python -c "import transformers; print(transformers.__version__)"
           python -m compileall -q .
           python -c "import tomllib, pathlib; tomllib.loads(pathlib.Path('pyproject.toml').read_text('utf-8'))"
           Get-ChildItem example_workflows -Recurse -Filter *.json | ForEach-Object { python -m json.tool $_.FullName | Out-Null }
+          $after = python -c "import transformers; print(transformers.__version__)"
+          if ($before -ne $after) { throw "Host Transformers changed during validation: $before -> $after" }
       - name: Prove host requirements remain dependency-free
         shell: pwsh
         run: |

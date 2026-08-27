@@ -49,6 +49,11 @@ class WorkerClient:
     def infer(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.request("v1/infer", payload, timeout=3600.0)
 
+    def infer_tts_batch(self, requests: list[dict[str, Any]]) -> dict[str, Any]:
+        return self.request(
+            "v1/infer/tts-batch", {"requests": requests}, timeout=7200.0
+        )
+
     def validate(self, payload: dict[str, Any]) -> dict[str, Any]:
         timeout = 3600.0 if payload.get("verify_hashes") else 60.0
         return self.request("v1/model/validate", payload, timeout=timeout)

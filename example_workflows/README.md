@@ -16,6 +16,9 @@
 - `14_srt_dubbing_pipeline`：SRT 角色绑定、严格预检、可恢复配音、room tone 自动补空隙、视频对白交付预设与按时间码渲染
 - `15_reference_cleanup`：先质检，再生成不覆盖原文件的 24 kHz 单声道参考清理副本
 - `16_synchronized_ab`：两个候选同步有效声音起点、匹配 EBU R128 响度并分别保存，便于公平 A/B
+- `17_reference_asr_tts`：参考音频一键 ASR，将逐字稿自动连接到声音克隆，并解析本次生成性能
+- `18_seed_audition`：同一句生成 4 个 Seed 候选，ASR 回读质检后输出推荐 Take 与全部候选 manifest
+- `19_long_audio_evidence`：长音频内容定位后直接裁切证据片段、输出剪辑清单并保存首个片段
 
 `ui` 目录可直接拖入 ComfyUI；`api` 目录用于 `/prompt` API。请先把示例引用的 `voice_reference.wav`、`comparison.wav`、`candidate_a.wav`、`candidate_b.wav`、`room_tone.wav`、`long_recording.wav`、`narrator_reference.wav` 或 `actor_reference.wav` 上传到 ComfyUI input，并按实际扫描结果修改模型加载器中的模型名称。
 

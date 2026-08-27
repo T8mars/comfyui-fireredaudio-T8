@@ -27,6 +27,14 @@ assert POST_SPEC and POST_SPEC.loader
 sys.modules[POST_SPEC.name] = POSTPRODUCTION
 POST_SPEC.loader.exec_module(POSTPRODUCTION)
 
+EVIDENCE_SPEC = importlib.util.spec_from_file_location(
+    "fireredaudio_evidence", ROOT / "runtime" / "evidence.py"
+)
+EVIDENCE = importlib.util.module_from_spec(EVIDENCE_SPEC)
+assert EVIDENCE_SPEC and EVIDENCE_SPEC.loader
+sys.modules[EVIDENCE_SPEC.name] = EVIDENCE
+EVIDENCE_SPEC.loader.exec_module(EVIDENCE)
+
 
 def write_tone(path: Path, *, seconds: float = 0.1, sample_rate: int = 24000, frequency: float = 440.0) -> None:
     frames = bytearray()
@@ -54,6 +62,20 @@ def write_delayed_tone(
         frames.extend(int(value).to_bytes(2, byteorder="little", signed=True))
     with wave.open(str(path), "wb") as writer:
         writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(frames)
+
+
+def write_stereo_tone(path: Path, *, seconds: float = 0.1, sample_rate: int = 24000) -> None:
+    frames = bytearray()
+    for index in range(round(seconds * sample_rate)):
+        left = round(math.sin(2 * math.pi * 330.0 * index / sample_rate) * 5000)
+        right = round(math.sin(2 * math.pi * 660.0 * index / sample_rate) * 9000)
+        frames.extend(int(left).to_bytes(2, byteorder="little", signed=True))
+        frames.extend(int(right).to_bytes(2, byteorder="little", signed=True))
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(2)
         writer.setsampwidth(2)
         writer.setframerate(sample_rate)
         writer.writeframes(frames)
@@ -230,6 +252,27 @@ class ProductionWorkflowTests(unittest.TestCase):
         )
         self.assertAlmostEqual(overlay["duration_seconds"], 0.1, places=3)
         self.assertEqual(len(overlay["placements"]), 2)
+
+    def test_timeline_preserves_stereo_and_promotes_mono(self) -> None:
+        stereo = self.root / "stereo.wav"
+        write_stereo_tone(stereo)
+        target = self.root / "stereo-sequence.wav"
+        report = PRODUCTION.render_timeline_to_wav(
+            [
+                {"line_id": "stereo", "status": "complete", "output_path": str(stereo)},
+                {"line_id": "mono", "status": "complete", "output_path": str(self.narrator_wav)},
+            ],
+            target,
+            mode="sequence",
+            peak_policy="none",
+        )
+        with wave.open(str(target), "rb") as reader:
+            self.assertEqual(reader.getnchannels(), 2)
+        rendered, _rate = PRODUCTION._read_wav_tensor(target)
+        self.assertEqual(rendered.shape[0], 2)
+        self.assertGreater(float((rendered[0, :2400] - rendered[1, :2400]).abs().max().item()), 0.01)
+        self.assertLess(float((rendered[0, 2400:] - rendered[1, 2400:]).abs().max().item()), 1e-6)
+        self.assertEqual(report["channels"], 2)
 
     def test_timeline_crossfade_overlaps_adjacent_sequence_clips(self) -> None:
         items = [
@@ -434,6 +477,81 @@ class ExampleWorkflowTests(unittest.TestCase):
             for loader in loaders:
                 self.assertGreaterEqual(len(loader["widgets_values"]), 5, path.name)
                 self.assertEqual(loader["widgets_values"][4], "auto_safe", path.name)
+
+    def test_v010_creator_workflows_cover_reference_asr_audition_and_evidence(self) -> None:
+        expected = {
+            "17_reference_asr_tts": {
+                "T8_FireRedAudio_ReferenceTranscript",
+                "T8_FireRedAudio_TTS",
+                "T8_FireRedAudio_PerformanceReport",
+                "T8_FireRedAudio_SaveAudio",
+            },
+            "18_seed_audition": {
+                "T8_FireRedAudio_SeedAudition",
+                "T8_FireRedAudio_SaveAudio",
+            },
+            "19_long_audio_evidence": {
+                "T8_FireRedAudio_LongLocator",
+                "T8_FireRedAudio_EvidenceClips",
+                "T8_FireRedAudio_SaveAudio",
+            },
+        }
+        for name, required in expected.items():
+            ui = json.loads((ROOT / "example_workflows" / "ui" / f"{name}.json").read_text(encoding="utf-8"))
+            api = json.loads((ROOT / "example_workflows" / "api" / f"{name}.json").read_text(encoding="utf-8"))
+            self.assertTrue((ROOT / "example_workflows" / "ui" / f"{name}.json").is_file())
+            self.assertTrue(required.issubset({value["class_type"] for value in api.values()}), name)
+            node_ids = {node["id"] for node in ui["nodes"]}
+            for _link_id, source, _slot, target, _target_slot, _kind in ui["links"]:
+                self.assertIn(source, node_ids, name)
+                self.assertIn(target, node_ids, name)
+
+
+class EvidenceClipTests(unittest.TestCase):
+    def test_extracts_common_time_formats_and_deduplicates(self) -> None:
+        structured = {
+            "timeline": [
+                {"start": "00:01.500", "end": "00:03,250", "title": "结论"},
+                {"start": "00:01.500", "end": "00:03,250", "title": "结论"},
+                {"time": "01:02:03", "event": "尾声"},
+            ]
+        }
+        ranges = EVIDENCE.extract_evidence_ranges(structured, default_clip_seconds=5.0)
+        self.assertEqual(len(ranges), 2)
+        self.assertEqual(ranges[0]["start_seconds"], 1.5)
+        self.assertEqual(ranges[0]["end_seconds"], 3.25)
+        self.assertEqual(ranges[1]["start_seconds"], 3723.0)
+        self.assertEqual(ranges[1]["end_seconds"], 3728.0)
+
+    def test_renders_padded_stereo_pcm16_evidence_without_downmix(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "source.wav"
+            write_stereo_tone(source, seconds=1.0, sample_rate=8000)
+            clips = EVIDENCE.render_evidence_clips(
+                source,
+                [{"start_seconds": 0.25, "end_seconds": 0.5, "label": "关键结论"}],
+                root / "clips",
+                padding_seconds=0.1,
+            )
+            self.assertEqual(len(clips), 1)
+            self.assertEqual(clips[0]["channels"], 2)
+            self.assertAlmostEqual(clips[0]["duration_seconds"], 0.45, places=3)
+            with wave.open(clips[0]["output_path"], "rb") as reader:
+                self.assertEqual(reader.getnchannels(), 2)
+                self.assertEqual(reader.getframerate(), 8000)
+
+    def test_out_of_range_evidence_fails_explicitly(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "source.wav"
+            write_tone(source, seconds=1.0)
+            with self.assertRaisesRegex(ValueError, "超出源音频"):
+                EVIDENCE.render_evidence_clips(
+                    source,
+                    [{"start_seconds": 10.0, "end_seconds": 12.0, "label": "不存在"}],
+                    root / "clips",
+                )
 
 
 if __name__ == "__main__":

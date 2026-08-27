@@ -4,7 +4,7 @@
     "inputs": {
       "model_name": "FireRedAudio",
       "custom_model_path": "",
-      "device": "cuda:0",
+      "device": "auto",
       "memory_mode": "auto",
       "acceleration_mode": "auto_safe",
       "profile": "full",
@@ -23,6 +23,20 @@
     }
   },
   "3": {
+    "class_type": "T8_FireRedAudio_ReferenceTranscript",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "reference_audio": [
+        "2",
+        0
+      ],
+      "max_new_tokens": 512
+    }
+  },
+  "4": {
     "class_type": "T8_FireRedAudio_GenerationSettings",
     "inputs": {
       "quality_preset": "balanced",
@@ -34,7 +48,7 @@
       "inference_cfg": 2.0
     }
   },
-  "4": {
+  "5": {
     "class_type": "T8_FireRedAudio_TTS",
     "inputs": {
       "model": [
@@ -42,27 +56,42 @@
         0
       ],
       "prompt_audio": [
-        "2",
+        "3",
         0
       ],
-      "prompt_text": "同时，他强调微调要科学有序。",
-      "target_text": "欢迎使用 FireRedAudio，来自 T8star-Aix。",
+      "prompt_text": [
+        "3",
+        1
+      ],
+      "target_text": "欢迎使用自动逐字稿驱动的声音克隆。",
       "language": "zh",
       "auto_transcribe_reference": true,
       "settings": [
-        "3",
+        "4",
         0
       ]
     }
   },
-  "5": {
-    "class_type": "SaveAudio",
+  "6": {
+    "class_type": "T8_FireRedAudio_SaveAudio",
     "inputs": {
       "audio": [
-        "4",
+        "5",
         0
       ],
-      "filename_prefix": "fireredaudio/tts"
+      "audio_format": "wav",
+      "filename_prefix": "asr-reference-tts",
+      "subfolder": "fireredaudio/tts"
+    }
+  },
+  "7": {
+    "class_type": "T8_FireRedAudio_PerformanceReport",
+    "inputs": {
+      "generation_report": [
+        "5",
+        1
+      ],
+      "target_rtf": 1.0
     }
   }
 }

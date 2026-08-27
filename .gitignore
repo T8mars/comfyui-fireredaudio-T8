@@ -8,6 +8,7 @@ build/
 dist/
 *.egg-info/
 validation/real-model-*/
+validation/upstream-report.json
 .idea/
 .vscode/
 .DS_Store

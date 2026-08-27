@@ -1,0 +1,72 @@
+{
+  "1": {
+    "class_type": "T8_FireRedAudio_ModelLoader",
+    "inputs": {
+      "model_name": "FireRedAudio",
+      "custom_model_path": "",
+      "device": "auto",
+      "memory_mode": "auto",
+      "acceleration_mode": "auto_safe",
+      "profile": "lite",
+      "worker_mode": "managed",
+      "runtime_python": "",
+      "worker_url": "",
+      "worker_token": "",
+      "verify_hashes": false,
+      "release_after_run": false
+    }
+  },
+  "2": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "long_recording.wav"
+    }
+  },
+  "3": {
+    "class_type": "T8_FireRedAudio_LongLocator",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "audio": [
+        "2",
+        0
+      ],
+      "mode": "content_to_time",
+      "query": "找出提到项目结论的所有片段。",
+      "enable_thinking": true,
+      "max_new_tokens": 2048
+    }
+  },
+  "4": {
+    "class_type": "T8_FireRedAudio_EvidenceClips",
+    "inputs": {
+      "source_audio": [
+        "2",
+        0
+      ],
+      "structured_json": [
+        "3",
+        1
+      ],
+      "project_name": "evidence-demo",
+      "subfolder": "fireredaudio/evidence",
+      "padding_seconds": 0.25,
+      "default_clip_seconds": 8.0,
+      "max_clips": 20
+    }
+  },
+  "5": {
+    "class_type": "T8_FireRedAudio_SaveAudio",
+    "inputs": {
+      "audio": [
+        "4",
+        0
+      ],
+      "audio_format": "wav",
+      "filename_prefix": "first-evidence",
+      "subfolder": "fireredaudio/evidence"
+    }
+  }
+}

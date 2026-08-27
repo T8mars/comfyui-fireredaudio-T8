@@ -78,14 +78,14 @@ def save(name: str, data: dict[str, Any]) -> None:
 def build() -> None:
     load_audio = node(2, "LoadAudio", [60, 450], ["voice_reference.wav", None, None], [], [out("AUDIO", "AUDIO", [2])], [300, 170])
     settings = node(3, "T8_FireRedAudio_GenerationSettings", [470, 80], ["balanced", 42, 750, 6, 512, 10, 2.0], [], [out("settings", "T8_FIREREDAUDIO_SETTINGS", [3])], [320, 280])
-    tts = node(4, "T8_FireRedAudio_TTS", [850, 180], ["同时，他强调微调要科学有序。", "欢迎使用 FireRedAudio，来自 T8star-Aix。", "zh"], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("prompt_audio", "AUDIO", 2), port("settings", "T8_FIREREDAUDIO_SETTINGS", 3)], [out("audio", "AUDIO", [4]), out("report", "STRING")], [390, 300])
+    tts = node(4, "T8_FireRedAudio_TTS", [850, 180], ["同时，他强调微调要科学有序。", "欢迎使用 FireRedAudio，来自 T8star-Aix。", "zh", True], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("prompt_audio", "AUDIO", 2), port("settings", "T8_FIREREDAUDIO_SETTINGS", 3)], [out("audio", "AUDIO", [4]), out("report", "STRING"), out("reference_transcript", "STRING", slot_index=2)], [390, 330])
     save_audio = node(5, "SaveAudio", [1300, 180], ["fireredaudio/tts"], [port("audio", "AUDIO", 4)], [out("audio", "AUDIO")], [280, 120])
     save("ui_01_zero_shot_tts", workflow([model_node([1]), load_audio, settings, tts, save_audio], [[1, 1, 0, 4, 0, "T8_FIREREDAUDIO_MODEL"], [2, 2, 0, 4, 1, "AUDIO"], [3, 3, 0, 4, 2, "T8_FIREREDAUDIO_SETTINGS"], [4, 4, 0, 5, 0, "AUDIO"]]))
     save("api_01_zero_shot_tts", {
         "1": {"class_type": "T8_FireRedAudio_ModelLoader", "inputs": {"model_name": "FireRedAudio", "custom_model_path": "", "device": "cuda:0", "memory_mode": "auto", "acceleration_mode": "auto_safe", "profile": "full", "worker_mode": "managed", "runtime_python": "", "worker_url": "", "worker_token": "", "verify_hashes": False, "release_after_run": False}},
         "2": {"class_type": "LoadAudio", "inputs": {"audio": "voice_reference.wav"}},
         "3": {"class_type": "T8_FireRedAudio_GenerationSettings", "inputs": {"quality_preset": "balanced", "seed": 42, "max_new_audio_steps": 750, "min_new_audio_steps": 6, "max_new_text_tokens": 512, "n_timesteps": 10, "inference_cfg": 2.0}},
-        "4": {"class_type": "T8_FireRedAudio_TTS", "inputs": {"model": ["1", 0], "prompt_audio": ["2", 0], "prompt_text": "同时，他强调微调要科学有序。", "target_text": "欢迎使用 FireRedAudio，来自 T8star-Aix。", "language": "zh", "settings": ["3", 0]}},
+        "4": {"class_type": "T8_FireRedAudio_TTS", "inputs": {"model": ["1", 0], "prompt_audio": ["2", 0], "prompt_text": "同时，他强调微调要科学有序。", "target_text": "欢迎使用 FireRedAudio，来自 T8star-Aix。", "language": "zh", "auto_transcribe_reference": True, "settings": ["3", 0]}},
         "5": {"class_type": "SaveAudio", "inputs": {"audio": ["4", 0], "filename_prefix": "fireredaudio/tts"}},
     })
 
@@ -227,6 +227,50 @@ def build() -> None:
         "3": {"class_type": "T8_FireRedAudio_SynchronizedAB", "inputs": {"audio_a": ["1", 0], "audio_b": ["2", 0], "synchronize_onset": True, "match_loudness": True, "target_lufs": -20.0, "onset_threshold_dbfs": -42.0, "preroll_ms": 20}},
         "4": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["3", 0], "audio_format": "wav", "filename_prefix": "comparison-A", "subfolder": "fireredaudio/comparisons"}},
         "5": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["3", 1], "audio_format": "wav", "filename_prefix": "comparison-B", "subfolder": "fireredaudio/comparisons"}},
+    })
+
+    reference_audio = node(2, "LoadAudio", [60, 470], ["voice_reference.wav", None, None], [], [out("AUDIO", "AUDIO", [2])], [300, 170])
+    reference_asr = node(3, "T8_FireRedAudio_ReferenceTranscript", [440, 400], [512], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("reference_audio", "AUDIO", 2)], [out("reference_audio", "AUDIO", [3]), out("transcript", "STRING", [4], slot_index=1), out("report", "STRING", slot_index=2)], [420, 240])
+    reference_settings = node(4, "T8_FireRedAudio_GenerationSettings", [470, 70], ["balanced", 42, 750, 6, 512, 10, 2.0], [], [out("settings", "T8_FIREREDAUDIO_SETTINGS", [5])], [320, 280])
+    reference_tts = node(5, "T8_FireRedAudio_TTS", [960, 250], ["欢迎使用自动逐字稿驱动的声音克隆。", "zh", True], [port("model", "T8_FIREREDAUDIO_MODEL", 5), port("prompt_audio", "AUDIO", 3), port("prompt_text", "STRING", 4), port("settings", "T8_FIREREDAUDIO_SETTINGS", 6)], [out("audio", "AUDIO", [7]), out("report", "STRING", [8], slot_index=1), out("reference_transcript", "STRING", slot_index=2)], [440, 350])
+    reference_save = node(6, "T8_FireRedAudio_SaveAudio", [1480, 190], ["wav", "asr-reference-tts", "fireredaudio/tts"], [port("audio", "AUDIO", 7)], [out("saved_path", "STRING"), out("audio", "AUDIO", slot_index=1)], [390, 240])
+    reference_perf = node(7, "T8_FireRedAudio_PerformanceReport", [1480, 520], [1.0], [port("generation_report", "STRING", 8)], [out("summary", "STRING"), out("performance_json", "STRING", slot_index=1), out("rtf", "FLOAT", slot_index=2), out("total_seconds", "FLOAT", slot_index=3), out("peak_vram_gib", "FLOAT", slot_index=4)], [430, 280])
+    reference_links = [[1, 1, 0, 3, 0, "T8_FIREREDAUDIO_MODEL"], [2, 2, 0, 3, 1, "AUDIO"], [3, 3, 0, 5, 1, "AUDIO"], [4, 3, 1, 5, 2, "STRING"], [5, 1, 0, 5, 0, "T8_FIREREDAUDIO_MODEL"], [6, 4, 0, 5, 3, "T8_FIREREDAUDIO_SETTINGS"], [7, 5, 0, 6, 0, "AUDIO"], [8, 5, 1, 7, 0, "STRING"]]
+    save("ui_17_reference_asr_tts", workflow([model_node([1, 5]), reference_audio, reference_asr, reference_settings, reference_tts, reference_save, reference_perf], reference_links))
+    save("api_17_reference_asr_tts", {
+        "1": {"class_type": "T8_FireRedAudio_ModelLoader", "inputs": {"model_name": "FireRedAudio", "custom_model_path": "", "device": "auto", "memory_mode": "auto", "acceleration_mode": "auto_safe", "profile": "full", "worker_mode": "managed", "runtime_python": "", "worker_url": "", "worker_token": "", "verify_hashes": False, "release_after_run": False}},
+        "2": {"class_type": "LoadAudio", "inputs": {"audio": "voice_reference.wav"}},
+        "3": {"class_type": "T8_FireRedAudio_ReferenceTranscript", "inputs": {"model": ["1", 0], "reference_audio": ["2", 0], "max_new_tokens": 512}},
+        "4": {"class_type": "T8_FireRedAudio_GenerationSettings", "inputs": {"quality_preset": "balanced", "seed": 42, "max_new_audio_steps": 750, "min_new_audio_steps": 6, "max_new_text_tokens": 512, "n_timesteps": 10, "inference_cfg": 2.0}},
+        "5": {"class_type": "T8_FireRedAudio_TTS", "inputs": {"model": ["1", 0], "prompt_audio": ["3", 0], "prompt_text": ["3", 1], "target_text": "欢迎使用自动逐字稿驱动的声音克隆。", "language": "zh", "auto_transcribe_reference": True, "settings": ["4", 0]}},
+        "6": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["5", 0], "audio_format": "wav", "filename_prefix": "asr-reference-tts", "subfolder": "fireredaudio/tts"}},
+        "7": {"class_type": "T8_FireRedAudio_PerformanceReport", "inputs": {"generation_report": ["5", 1], "target_rtf": 1.0}},
+    })
+
+    audition_audio = node(2, "LoadAudio", [60, 470], ["voice_reference.wav", None, None], [], [out("AUDIO", "AUDIO", [2])], [300, 170])
+    audition_settings = node(3, "T8_FireRedAudio_GenerationSettings", [470, 70], ["balanced", 42, 750, 6, 512, 10, 2.0], [], [out("settings", "T8_FIREREDAUDIO_SETTINGS", [3])], [320, 280])
+    audition = node(4, "T8_FireRedAudio_SeedAudition", [850, 230], ["", "请从多个候选中选择最自然的一条。", "zh", 42, 4, True, "narrator-audition", "fireredaudio/auditions"], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("prompt_audio", "AUDIO", 2), port("settings", "T8_FIREREDAUDIO_SETTINGS", 3)], [out("recommended_audio", "AUDIO", [4]), out("all_takes", "T8_FIREREDAUDIO_AUDIO_BATCH", slot_index=1), out("manifest_path", "STRING", slot_index=2), out("reference_transcript", "STRING", slot_index=3), out("audition_report", "STRING", slot_index=4)], [460, 430])
+    audition_save = node(5, "T8_FireRedAudio_SaveAudio", [1400, 260], ["wav", "recommended-take", "fireredaudio/auditions"], [port("audio", "AUDIO", 4)], [out("saved_path", "STRING"), out("audio", "AUDIO", slot_index=1)], [390, 240])
+    save("ui_18_seed_audition", workflow([model_node([1]), audition_audio, audition_settings, audition, audition_save], [[1, 1, 0, 4, 0, "T8_FIREREDAUDIO_MODEL"], [2, 2, 0, 4, 1, "AUDIO"], [3, 3, 0, 4, 2, "T8_FIREREDAUDIO_SETTINGS"], [4, 4, 0, 5, 0, "AUDIO"]]))
+    save("api_18_seed_audition", {
+        "1": {"class_type": "T8_FireRedAudio_ModelLoader", "inputs": {"model_name": "FireRedAudio", "custom_model_path": "", "device": "auto", "memory_mode": "auto", "acceleration_mode": "auto_safe", "profile": "full", "worker_mode": "managed", "runtime_python": "", "worker_url": "", "worker_token": "", "verify_hashes": False, "release_after_run": False}},
+        "2": {"class_type": "LoadAudio", "inputs": {"audio": "voice_reference.wav"}},
+        "3": {"class_type": "T8_FireRedAudio_GenerationSettings", "inputs": {"quality_preset": "balanced", "seed": 42, "max_new_audio_steps": 750, "min_new_audio_steps": 6, "max_new_text_tokens": 512, "n_timesteps": 10, "inference_cfg": 2.0}},
+        "4": {"class_type": "T8_FireRedAudio_SeedAudition", "inputs": {"model": ["1", 0], "prompt_audio": ["2", 0], "prompt_text": "", "target_text": "请从多个候选中选择最自然的一条。", "language": "zh", "seed_start": 42, "take_count": 4, "run_asr_qa": True, "project_name": "narrator-audition", "subfolder": "fireredaudio/auditions", "settings": ["3", 0]}},
+        "5": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["4", 0], "audio_format": "wav", "filename_prefix": "recommended-take", "subfolder": "fireredaudio/auditions"}},
+    })
+
+    evidence_audio = node(2, "LoadAudio", [60, 450], ["long_recording.wav", None, None], [], [out("AUDIO", "AUDIO", [2, 3])], [300, 170])
+    evidence_locator = node(3, "T8_FireRedAudio_LongLocator", [480, 210], ["content_to_time", "找出提到项目结论的所有片段。", True, 2048], [port("model", "T8_FIREREDAUDIO_MODEL", 1), port("audio", "AUDIO", 2)], [out("answer", "STRING"), out("structured_json", "STRING", [4], slot_index=1), out("reasoning", "STRING", slot_index=2), out("report", "STRING", slot_index=3)], [430, 310])
+    evidence_clips = node(4, "T8_FireRedAudio_EvidenceClips", [980, 250], ["evidence-demo", "fireredaudio/evidence", 0.25, 8.0, 20], [port("source_audio", "AUDIO", 3), port("structured_json", "STRING", 4)], [out("first_clip", "AUDIO", [5]), out("evidence_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", slot_index=1), out("cut_list_json", "STRING", slot_index=2), out("manifest_path", "STRING", slot_index=3)], [460, 360])
+    evidence_save = node(5, "T8_FireRedAudio_SaveAudio", [1510, 260], ["wav", "first-evidence", "fireredaudio/evidence"], [port("audio", "AUDIO", 5)], [out("saved_path", "STRING"), out("audio", "AUDIO", slot_index=1)], [390, 240])
+    save("ui_19_long_audio_evidence", workflow([model_node([1]), evidence_audio, evidence_locator, evidence_clips, evidence_save], [[1, 1, 0, 3, 0, "T8_FIREREDAUDIO_MODEL"], [2, 2, 0, 3, 1, "AUDIO"], [3, 2, 0, 4, 0, "AUDIO"], [4, 3, 1, 4, 1, "STRING"], [5, 4, 0, 5, 0, "AUDIO"]]))
+    save("api_19_long_audio_evidence", {
+        "1": {"class_type": "T8_FireRedAudio_ModelLoader", "inputs": {"model_name": "FireRedAudio", "custom_model_path": "", "device": "auto", "memory_mode": "auto", "acceleration_mode": "auto_safe", "profile": "lite", "worker_mode": "managed", "runtime_python": "", "worker_url": "", "worker_token": "", "verify_hashes": False, "release_after_run": False}},
+        "2": {"class_type": "LoadAudio", "inputs": {"audio": "long_recording.wav"}},
+        "3": {"class_type": "T8_FireRedAudio_LongLocator", "inputs": {"model": ["1", 0], "audio": ["2", 0], "mode": "content_to_time", "query": "找出提到项目结论的所有片段。", "enable_thinking": True, "max_new_tokens": 2048}},
+        "4": {"class_type": "T8_FireRedAudio_EvidenceClips", "inputs": {"source_audio": ["2", 0], "structured_json": ["3", 1], "project_name": "evidence-demo", "subfolder": "fireredaudio/evidence", "padding_seconds": 0.25, "default_clip_seconds": 8.0, "max_clips": 20}},
+        "5": {"class_type": "T8_FireRedAudio_SaveAudio", "inputs": {"audio": ["4", 0], "audio_format": "wav", "filename_prefix": "first-evidence", "subfolder": "fireredaudio/evidence"}},
     })
 
 

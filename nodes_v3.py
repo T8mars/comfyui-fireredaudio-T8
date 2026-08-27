@@ -5,6 +5,7 @@ import json
 import logging
 import platform
 import shutil
+import statistics
 import sys
 import threading
 import uuid
@@ -19,6 +20,7 @@ from .runtime.audio_adapter import (
     _safe_output_dir,
     audio_to_wav,
     output_wav_path,
+    saved_audio_ui,
     save_audio_file,
     save_text_file,
     wav_to_audio,
@@ -31,6 +33,11 @@ from .runtime.model_discovery import (
     register_model_paths,
     resolve_model,
     validate_sizes,
+)
+from .runtime.evidence import (
+    extract_evidence_ranges,
+    parse_structured_json,
+    render_evidence_clips,
 )
 from .runtime.postproduction import prepare_synchronized_ab
 from .runtime.production import (
@@ -211,6 +218,76 @@ def _infer(handle: RuntimeHandle, request: dict[str, Any]) -> dict[str, Any]:
         progress_bar.update_absolute(100, 100)
     _set_official_progress(1.0)
     return result_box
+
+
+def _infer_tts_batch(
+    handle: RuntimeHandle, requests: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Run the Worker's latent-first TTS batch while forwarding ComfyUI cancellation."""
+    client = _client(handle)
+    result_box: dict[str, Any] = {}
+    error_box: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            result_box.update(client.infer_tts_batch(requests))
+        except BaseException as exc:
+            error_box.append(exc)
+
+    thread = threading.Thread(target=run, name="fireredaudio-tts-audition", daemon=True)
+    thread.start()
+    progress_bar = None
+    try:
+        from comfy.utils import ProgressBar
+
+        progress_bar = ProgressBar(100)
+    except Exception:
+        pass
+    while thread.is_alive():
+        thread.join(timeout=0.5)
+        try:
+            status = client.health().get("status", {})
+            progress = float(status.get("progress", 0.0))
+            official = _set_official_progress(progress)
+            if progress_bar is not None and not official:
+                progress_bar.update_absolute(int(max(0.0, min(1.0, progress)) * 100), 100)
+        except Exception:
+            pass
+        try:
+            from comfy.model_management import throw_exception_if_processing_interrupted
+
+            throw_exception_if_processing_interrupted()
+        except ImportError:
+            pass
+        except BaseException:
+            try:
+                client.cancel()
+            finally:
+                thread.join(timeout=3.0)
+            raise
+    if error_box:
+        raise error_box[0]
+    if progress_bar is not None:
+        progress_bar.update_absolute(100, 100)
+    _set_official_progress(1.0)
+    return result_box
+
+
+def _transcribe_reference(handle: RuntimeHandle, audio_path: str | Path) -> tuple[str, dict[str, Any]]:
+    request = _base_request(handle, "asr")
+    request.update(
+        {
+            "audio_path": str(audio_path),
+            "prompt": "Transcribe speech to text.",
+            "max_new_tokens": 512,
+            "release_after": False,
+        }
+    )
+    result = _infer(handle, request)
+    transcript = str(result.get("answer") or "").strip()
+    if not transcript:
+        raise RuntimeError("参考音频 ASR 未返回逐字稿，请检查录音是否包含清晰语音")
+    return transcript, result
 
 
 def _base_request(
@@ -419,6 +496,47 @@ class T8FireRedAudioASR(io.ComfyNode):
         return io.NodeOutput(result.get("answer", ""), _json(result))
 
 
+class T8FireRedAudioReferenceTranscript(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_ReferenceTranscript",
+            display_name="FireRedAudio 参考音频 ASR 逐字稿 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="一键转写声音克隆参考音频，并原样传递音频；把逐字稿输出连接到 TTS 或音色档案即可自动带入。",
+            inputs=[
+                ModelType.Input("model"),
+                io.Audio.Input("reference_audio", display_name="参考音频"),
+                io.Int.Input("max_new_tokens", display_name="最大新 Token", default=512, min=32, max=4096),
+            ],
+            outputs=[
+                io.Audio.Output("reference_audio", display_name="参考音频"),
+                io.String.Output("transcript", display_name="自动逐字稿"),
+                io.String.Output("report", display_name="ASR 报告"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls, model: RuntimeHandle, reference_audio: dict, max_new_tokens: int
+    ) -> io.NodeOutput:
+        path = audio_to_wav(reference_audio, "reference-transcript")
+        request = _base_request(model, "asr")
+        request.update(
+            {
+                "audio_path": str(path),
+                "prompt": "Transcribe speech to text.",
+                "max_new_tokens": max_new_tokens,
+            }
+        )
+        result = _infer(model, request)
+        transcript = str(result.get("answer") or "").strip()
+        if not transcript:
+            raise RuntimeError("参考音频 ASR 未返回逐字稿")
+        return io.NodeOutput(reference_audio, transcript, _json(result))
+
+
 class T8FireRedAudioLongASR(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -515,6 +633,80 @@ class T8FireRedAudioLongLocator(io.ComfyNode):
         )
 
 
+class T8FireRedAudioEvidenceClips(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_EvidenceClips",
+            display_name="FireRedAudio 定位证据片段/剪辑清单 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="把长音频定位 JSON 转成可试听证据片段、时间范围和可继续进入批量制作的 AudioBatch。",
+            inputs=[
+                io.Audio.Input("source_audio", display_name="原始长音频"),
+                io.String.Input("structured_json", display_name="定位结构化 JSON", multiline=True, force_input=True),
+                io.String.Input("project_name", display_name="项目名", default="evidence-project"),
+                io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/evidence"),
+                io.Float.Input("padding_seconds", display_name="片段前后留白", default=0.25, min=0.0, max=10.0, step=0.05),
+                io.Float.Input("default_clip_seconds", display_name="仅有时间点时的默认长度", default=8.0, min=0.5, max=120.0, step=0.5),
+                io.Int.Input("max_clips", display_name="最多片段", default=20, min=1, max=100),
+            ],
+            outputs=[
+                io.Audio.Output("first_clip", display_name="首个证据片段"),
+                AudioBatchType.Output("evidence_batch", display_name="证据片段批次"),
+                io.String.Output("cut_list_json", display_name="剪辑清单 JSON"),
+                io.String.Output("manifest_path", display_name="Manifest 路径"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        source_audio: dict,
+        structured_json: str,
+        project_name: str,
+        subfolder: str,
+        padding_seconds: float,
+        default_clip_seconds: float,
+        max_clips: int,
+    ) -> io.NodeOutput:
+        structured = parse_structured_json(structured_json)
+        ranges = extract_evidence_ranges(
+            structured,
+            default_clip_seconds=default_clip_seconds,
+            max_clips=max_clips,
+        )
+        if not ranges:
+            raise ValueError("定位结果中没有可识别的开始/结束时间")
+        project = _safe_name(project_name, "evidence-project")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/evidence"
+        project_dir = _safe_output_dir(f"{clean_subfolder}/{project}")
+        source_path = audio_to_wav(source_audio, "evidence-source")
+        items = render_evidence_clips(
+            source_path,
+            ranges,
+            project_dir,
+            filename_prefix=project,
+            padding_seconds=padding_seconds,
+        )
+        manifest_path = project_dir / "manifest.json"
+        manifest_payload = {
+            "manifest_version": MANIFEST_VERSION,
+            "kind": "long_audio_evidence",
+            "project_name": project,
+            "source_audio": str(source_path),
+            "items": items,
+        }
+        write_manifest(manifest_path, manifest_payload)
+        batch = AudioBatch(str(manifest_path), tuple(items))
+        return io.NodeOutput(
+            wav_to_audio(items[0]["output_path"]),
+            batch,
+            _json(items),
+            str(manifest_path),
+        )
+
+
 class T8FireRedAudioUnderstand(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -595,32 +787,231 @@ class T8FireRedAudioTTS(io.ComfyNode):
             display_name="FireRedAudio 零样本声音克隆 · T8star-Aix",
             category=CATEGORY,
             essentials_category="Audio",
-            description="参考音频和逐字稿驱动的中英文零样本 TTS，输出 24kHz ComfyUI AUDIO。",
+            description="参考音频驱动的中英文零样本 TTS；逐字稿可手工连接，留空时可自动 ASR 后继续生成。",
             inputs=[
                 ModelType.Input("model"),
                 io.Audio.Input("prompt_audio", display_name="参考音频"),
-                io.String.Input("prompt_text", display_name="参考音频逐字稿", multiline=True, dynamic_prompts=True),
+                io.String.Input("prompt_text", display_name="参考音频逐字稿（可留空自动 ASR）", default="", multiline=True, dynamic_prompts=True),
                 io.String.Input("target_text", display_name="目标文本", multiline=True, dynamic_prompts=True),
                 io.Combo.Input("language", display_name="语言", options=["zh", "en"], default="zh"),
+                io.Boolean.Input("auto_transcribe_reference", display_name="逐字稿为空时自动 ASR", default=True),
                 SettingsType.Input("settings", display_name="生成参数", optional=True),
             ],
-            outputs=[io.Audio.Output("audio", display_name="生成音频"), io.String.Output("report", display_name="运行报告")],
+            outputs=[
+                io.Audio.Output("audio", display_name="生成音频"),
+                io.String.Output("report", display_name="运行报告"),
+                io.String.Output("reference_transcript", display_name="实际参考逐字稿"),
+            ],
         )
 
     @classmethod
-    def validate_inputs(cls, prompt_text: str, target_text: str, **kwargs) -> bool | str:
-        if not prompt_text.strip() or not target_text.strip():
-            return "参考逐字稿和目标文本不能为空。"
+    def validate_inputs(
+        cls,
+        prompt_text: str,
+        target_text: str,
+        auto_transcribe_reference: bool = True,
+        **kwargs,
+    ) -> bool | str:
+        if not target_text.strip():
+            return "目标文本不能为空。"
+        if not prompt_text.strip() and not auto_transcribe_reference:
+            return "参考逐字稿为空；请填写逐字稿或启用自动 ASR。"
         return True
 
     @classmethod
-    def execute(cls, model: RuntimeHandle, prompt_audio: dict, prompt_text: str, target_text: str, language: str, settings: GenerationSettings | None = None) -> io.NodeOutput:
+    def execute(
+        cls,
+        model: RuntimeHandle,
+        prompt_audio: dict,
+        prompt_text: str,
+        target_text: str,
+        language: str,
+        auto_transcribe_reference: bool = True,
+        settings: GenerationSettings | None = None,
+    ) -> io.NodeOutput:
         config = _settings(settings)
+        reference_path = audio_to_wav(prompt_audio, "tts-reference")
+        transcript = str(prompt_text or "").strip()
+        transcript_report: dict[str, Any] | None = None
+        if not transcript:
+            if not auto_transcribe_reference:
+                raise ValueError("参考逐字稿为空且未启用自动 ASR")
+            transcript, transcript_report = _transcribe_reference(model, reference_path)
         output = output_wav_path("tts")
         request = _base_request(model, "tts", config)
-        request.update({"prompt_audio": str(audio_to_wav(prompt_audio, "tts-reference")), "prompt_text": prompt_text, "target_text": target_text, "language": language, "output_path": str(output)})
+        request.update({"prompt_audio": str(reference_path), "prompt_text": transcript, "target_text": target_text, "language": language, "output_path": str(output)})
         result = _infer(model, request)
-        return io.NodeOutput(wav_to_audio(result["output_path"]), _json(result))
+        result["reference_transcript"] = transcript
+        result["reference_transcript_source"] = "automatic_asr" if transcript_report else "user"
+        if transcript_report:
+            result["reference_asr_performance"] = transcript_report.get("performance")
+        return io.NodeOutput(wav_to_audio(result["output_path"]), _json(result), transcript)
+
+
+class T8FireRedAudioSeedAudition(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_SeedAudition",
+            display_name="FireRedAudio 多 Seed 试音/推荐 Take · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="一次生成 2–8 个 Seed 候选；可选 ASR 回读质检，输出推荐 Take、全部持久化候选与审计报告。",
+            inputs=[
+                ModelType.Input("model"),
+                io.Audio.Input("prompt_audio", display_name="参考音频"),
+                io.String.Input("prompt_text", display_name="参考逐字稿（可留空自动 ASR）", default="", multiline=True, dynamic_prompts=True),
+                io.String.Input("target_text", display_name="目标文本", multiline=True, dynamic_prompts=True),
+                io.Combo.Input("language", display_name="语言", options=["zh", "en"], default="zh"),
+                io.Int.Input("seed_start", display_name="起始 Seed", default=42, min=0, max=0xFFFFFFFF - 8),
+                io.Int.Input("take_count", display_name="候选数量", default=4, min=2, max=8),
+                io.Boolean.Input("run_asr_qa", display_name="逐个 ASR 回读并参与推荐", default=True),
+                io.String.Input("project_name", display_name="试音项目名", default="seed-audition"),
+                io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/auditions"),
+                SettingsType.Input("settings", display_name="生成参数", optional=True),
+            ],
+            outputs=[
+                io.Audio.Output("recommended_audio", display_name="推荐 Take"),
+                AudioBatchType.Output("all_takes", display_name="全部候选"),
+                io.String.Output("manifest_path", display_name="Manifest 路径"),
+                io.String.Output("reference_transcript", display_name="实际参考逐字稿"),
+                io.String.Output("audition_report", display_name="试音与推荐报告"),
+            ],
+        )
+
+    @classmethod
+    def validate_inputs(cls, target_text: str, project_name: str, **kwargs) -> bool | str:
+        if not target_text.strip():
+            return "目标文本不能为空。"
+        if not project_name.strip():
+            return "试音项目名不能为空。"
+        return True
+
+    @classmethod
+    def execute(
+        cls,
+        model: RuntimeHandle,
+        prompt_audio: dict,
+        prompt_text: str,
+        target_text: str,
+        language: str,
+        seed_start: int,
+        take_count: int,
+        run_asr_qa: bool,
+        project_name: str,
+        subfolder: str,
+        settings: GenerationSettings | None = None,
+    ) -> io.NodeOutput:
+        reference_path = audio_to_wav(prompt_audio, "audition-reference")
+        transcript = str(prompt_text or "").strip()
+        reference_source = "user"
+        if not transcript:
+            transcript, _asr_report = _transcribe_reference(model, reference_path)
+            reference_source = "automatic_asr"
+        project = _safe_name(project_name, "seed-audition")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/auditions"
+        project_dir = _safe_output_dir(f"{clean_subfolder}/{project}-{uuid.uuid4().hex[:8]}")
+        config = _settings(settings)
+        requests: list[dict[str, Any]] = []
+        for offset in range(int(take_count)):
+            seed = int(seed_start) + offset
+            request = _base_request(model, "tts", config)
+            request.update(
+                {
+                    "task_id": f"audition-{seed}-{uuid.uuid4().hex[:8]}",
+                    "seed": seed,
+                    "prompt_audio": str(reference_path),
+                    "prompt_text": transcript,
+                    "target_text": target_text,
+                    "language": language,
+                    "output_path": str(project_dir / f"take-seed-{seed}.wav"),
+                }
+            )
+            requests.append(request)
+        batch_result = _infer_tts_batch(model, requests)
+        items: list[dict[str, Any]] = []
+        for outcome in batch_result.get("outcomes", []):
+            if not outcome.get("ok"):
+                items.append(
+                    {
+                        "line_id": f"take-{int(outcome.get('index', 0)) + 1:03d}",
+                        "index": int(outcome.get("index", 0)) + 1,
+                        "status": "failed",
+                        "error": outcome.get("error"),
+                    }
+                )
+                continue
+            result = outcome["result"]
+            index = int(outcome.get("index", 0))
+            path = Path(result["output_path"])
+            metrics = wav_metrics(path)
+            item: dict[str, Any] = {
+                "line_id": f"take-{index + 1:03d}",
+                "index": index + 1,
+                "status": "complete",
+                "output_path": str(path),
+                "seed": requests[index]["seed"],
+                "metrics": metrics,
+                "worker_report": result,
+            }
+            if run_asr_qa:
+                qa_request = _base_request(model, "asr")
+                qa_request.update(
+                    {
+                        "audio_path": str(path),
+                        "prompt": "Transcribe speech to text.",
+                        "max_new_tokens": 1024,
+                        "release_after": False,
+                    }
+                )
+                qa_result = _infer(model, qa_request)
+                hypothesis = str(qa_result.get("answer") or "").strip()
+                metric_name, error_rate = text_error_rate(target_text, hypothesis, language)
+                item["asr_qa"] = {
+                    "hypothesis": hypothesis,
+                    "metric": metric_name,
+                    "error_rate": error_rate,
+                }
+            items.append(item)
+        successful = [item for item in items if item.get("status") == "complete"]
+        if not successful:
+            raise RuntimeError("多 Seed 试音没有生成任何有效候选：" + _json(items))
+        median_duration = statistics.median(
+            float(item["metrics"]["duration_seconds"]) for item in successful
+        )
+        for item in successful:
+            metrics = item["metrics"]
+            duration_penalty = abs(float(metrics["duration_seconds"]) - median_duration) / max(median_duration, 0.001)
+            item["ranking_score"] = round(
+                float(item.get("asr_qa", {}).get("error_rate", 0.0)) * 1000.0
+                + float(metrics.get("clipping_ratio", 0.0)) * 500.0
+                + float(metrics.get("silence_ratio", 0.0)) * 10.0
+                + duration_penalty,
+                6,
+            )
+        recommended = min(successful, key=lambda item: (item["ranking_score"], item["seed"]))
+        manifest_path = project_dir / "manifest.json"
+        manifest_payload = {
+            "manifest_version": MANIFEST_VERSION,
+            "kind": "seed_audition",
+            "project_name": project,
+            "reference_transcript": transcript,
+            "reference_transcript_source": reference_source,
+            "target_text": target_text,
+            "language": language,
+            "recommended_line_id": recommended["line_id"],
+            "items": items,
+            "performance": batch_result.get("performance"),
+        }
+        write_manifest(manifest_path, manifest_payload)
+        batch = AudioBatch(str(manifest_path), tuple(items))
+        return io.NodeOutput(
+            wav_to_audio(recommended["output_path"]),
+            batch,
+            str(manifest_path),
+            transcript,
+            _json(manifest_payload),
+        )
 
 
 class T8FireRedAudioVoiceDesign(io.ComfyNode):
@@ -1453,7 +1844,11 @@ class T8FireRedAudioSaveAudio(io.ComfyNode):
                 io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio"),
                 DeliveryPresetType.Input("delivery_preset", display_name="可选交付预设", optional=True),
             ],
-            outputs=[io.String.Output("saved_path", display_name="保存路径")],
+            outputs=[
+                io.String.Output("saved_path", display_name="保存路径"),
+                io.Audio.Output("audio", display_name="已保存音频"),
+            ],
+            is_output_node=True,
         )
 
     @classmethod
@@ -1474,7 +1869,7 @@ class T8FireRedAudioSaveAudio(io.ComfyNode):
             subfolder=subfolder,
             audio_format=effective_format,
         )
-        return io.NodeOutput(str(target))
+        return io.NodeOutput(str(target), audio, ui=saved_audio_ui(target))
 
 
 class T8FireRedAudioSaveSubtitle(io.ComfyNode):
@@ -1534,6 +1929,58 @@ class T8FireRedAudioRuntimeControl(io.ComfyNode):
         return io.NodeOutput(_json(result))
 
 
+class T8FireRedAudioPerformanceReport(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_PerformanceReport",
+            display_name="FireRedAudio 分阶段性能分析 · T8star-Aix",
+            category=CATEGORY,
+            description="解析生成节点报告，显示冷/热启动、各阶段耗时、实时率和 CUDA 峰值显存，用于选择真实有效的加速模式。",
+            inputs=[
+                io.String.Input("generation_report", display_name="生成报告 JSON", multiline=True, force_input=True),
+                io.Float.Input("target_rtf", display_name="目标 RTF", default=1.0, min=0.0, max=1000.0, step=0.1),
+            ],
+            outputs=[
+                io.String.Output("summary", display_name="性能摘要"),
+                io.String.Output("performance_json", display_name="性能 JSON"),
+                io.Float.Output("rtf", display_name="RTF"),
+                io.Float.Output("total_seconds", display_name="总耗时（秒）"),
+                io.Float.Output("peak_vram_gib", display_name="峰值显存 GiB"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, generation_report: str, target_rtf: float) -> io.NodeOutput:
+        try:
+            payload = json.loads(generation_report)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("生成报告不是有效 JSON") from exc
+        performance = payload.get("performance") if isinstance(payload, dict) else None
+        if not isinstance(performance, dict):
+            raise ValueError("生成报告中没有 performance 字段；请连接 v0.10 生成节点报告")
+        total = float(performance.get("total_seconds") or payload.get("elapsed_seconds") or 0.0)
+        rtf = float(performance.get("rtf") or 0.0)
+        peak_bytes = int(performance.get("gpu_peak_allocated_bytes") or 0)
+        peak_gib = peak_bytes / (1024 ** 3)
+        phases = performance.get("phase_seconds") or {}
+        phase_copy = "、".join(
+            f"{name} {float(seconds):.2f}s"
+            for name, seconds in sorted(phases.items(), key=lambda item: float(item[1]), reverse=True)
+        ) or "无阶段数据"
+        target_met = rtf > 0 and rtf <= float(target_rtf)
+        summary = "\n".join(
+            [
+                f"{'冷启动' if performance.get('cold_start') else '热运行'} · {performance.get('device') or 'unknown'} · {performance.get('acceleration_mode') or 'unknown'}",
+                f"总耗时 {total:.3f}s · RTF {rtf:.3f} · 峰值显存 {peak_gib:.3f} GiB",
+                f"目标 RTF ≤ {float(target_rtf):.3f}：{'达标' if target_met else '未达标或无输出时长'}",
+                f"阶段：{phase_copy}",
+            ]
+        )
+        enriched = {**performance, "target_rtf": float(target_rtf), "target_met": target_met}
+        return io.NodeOutput(summary, _json(enriched), rtf, total, peak_gib)
+
+
 class T8FireRedAudioEnvironment(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -1576,11 +2023,14 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioGenerationSettings,
             T8FireRedAudioDeliveryPreset,
             T8FireRedAudioASR,
+            T8FireRedAudioReferenceTranscript,
             T8FireRedAudioLongASR,
             T8FireRedAudioLongLocator,
+            T8FireRedAudioEvidenceClips,
             T8FireRedAudioUnderstand,
             T8FireRedAudioMultiUnderstand,
             T8FireRedAudioTTS,
+            T8FireRedAudioSeedAudition,
             T8FireRedAudioVoiceDesign,
             T8FireRedAudioSpeechEdit,
             T8FireRedAudioAcousticEdit,
@@ -1597,6 +2047,7 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioSaveAudio,
             T8FireRedAudioSaveSubtitle,
             T8FireRedAudioRuntimeControl,
+            T8FireRedAudioPerformanceReport,
             T8FireRedAudioEnvironment,
         ]
 
