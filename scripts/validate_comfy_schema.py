@@ -54,6 +54,10 @@ def validate_examples(schemas: dict[str, Any]) -> dict[str, int]:
                 raise ValueError(f"{path.name}: link {link_id} 源输出槽越界")
             if int(target_slot) >= len(target_inputs):
                 raise ValueError(f"{path.name}: link {link_id} 目标输入槽越界")
+            if int(link_id) not in source_outputs[int(source_slot)].get("links", []):
+                raise ValueError(f"{path.name}: link {link_id} 未登记在源输出槽")
+            if target_inputs[int(target_slot)].get("link") != int(link_id):
+                raise ValueError(f"{path.name}: link {link_id} 未登记在目标输入槽")
         ui_count += 1
 
     for path in sorted((ROOT / "example_workflows" / "api").glob("*.json")):

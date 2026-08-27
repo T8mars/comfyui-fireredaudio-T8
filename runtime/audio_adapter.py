@@ -110,6 +110,57 @@ def save_audio_file(
     return target
 
 
+def export_audio_path(
+    source_path: str | Path,
+    target_path: str | Path,
+    *,
+    audio_format: str = "wav",
+) -> Path:
+    """Copy or transcode an existing audio file to an exact output target."""
+    source = Path(source_path).resolve()
+    target = Path(target_path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"待导出音频不存在：{source}")
+    extension = str(audio_format).lower()
+    if extension not in {"wav", "flac", "mp3", "ogg"}:
+        raise ValueError("audio_format 必须是 wav/flac/mp3/ogg")
+    if target.suffix.lower() != f".{extension}":
+        raise ValueError("导出目标扩展名与 audio_format 不一致")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source == target:
+        return target
+    if extension == "wav" and source.suffix.lower() == ".wav":
+        shutil.copy2(source, target)
+        return target
+    ffmpeg = _ffmpeg_path()
+    codecs = {"wav": "pcm_s16le", "flac": "flac", "mp3": "libmp3lame", "ogg": "libvorbis"}
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(source),
+            "-codec:a",
+            codecs[extension],
+            str(target),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
+        check=False,
+    )
+    if completed.returncode != 0 or not target.is_file():
+        target.unlink(missing_ok=True)
+        raise RuntimeError(f"FFmpeg 导出失败：{completed.stderr.strip()}")
+    return target
+
+
 def save_text_file(
     content: str,
     *,
@@ -153,6 +204,14 @@ def saved_audio_ui(path: str | Path) -> dict:
             }
         ]
     }
+
+
+def saved_audio_files_ui(paths: list[str | Path]) -> dict:
+    """Return one native ComfyUI audio/download list for multiple output assets."""
+    descriptors: list[dict[str, str]] = []
+    for path in paths:
+        descriptors.extend(saved_audio_ui(path)["audio"])
+    return {"audio": descriptors}
 
 
 def _safe_output_dir(subfolder: str) -> Path:

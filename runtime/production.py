@@ -117,6 +117,99 @@ class AudioBatch:
         }
 
 
+def parse_line_ids(value: str | Iterable[str]) -> tuple[str, ...]:
+    """Parse QA/selection line IDs from JSON, newline or comma separated text."""
+    if isinstance(value, str):
+        content = value.strip()
+        if not content:
+            return ()
+        parsed: Any = None
+        if content.startswith("["):
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                parsed = None
+        values = parsed if isinstance(parsed, list) else re.split(r"[\s,，;；]+", content)
+    else:
+        values = value
+    output: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        line_id = str(raw).strip()
+        if line_id and line_id not in seen:
+            output.append(line_id)
+            seen.add(line_id)
+    return tuple(output)
+
+
+def select_audio_batch_item(
+    audio_batch: AudioBatch,
+    *,
+    mode: str = "position",
+    position: int = 1,
+    line_id: str = "",
+    speaker: str = "",
+) -> dict[str, Any]:
+    """Select one playable item without changing the source AudioBatch."""
+    if not isinstance(audio_batch, AudioBatch):
+        raise TypeError("必须连接 AudioBatch")
+    playable = audio_batch.successful_items()
+    if not playable:
+        raise ValueError("AudioBatch 中没有可试听的成功音频")
+    if mode == "position":
+        index = int(position) - 1
+        if index < 0 or index >= len(playable):
+            raise IndexError(f"试听序号超出范围：1–{len(playable)}")
+        return dict(playable[index])
+    if mode == "line_id":
+        wanted = str(line_id).strip()
+        if not wanted:
+            raise ValueError("按 line_id 选择时必须填写 line_id")
+        selected = next((item for item in playable if str(item.get("line_id")) == wanted), None)
+        if selected is None:
+            raise ValueError(f"没有找到可试听 line_id：{wanted}")
+        return dict(selected)
+    if mode == "speaker":
+        wanted = str(speaker).strip().casefold()
+        if not wanted:
+            raise ValueError("按角色选择时必须填写角色名称")
+        selected = next(
+            (item for item in playable if str(item.get("speaker") or "").strip().casefold() == wanted),
+            None,
+        )
+        if selected is None:
+            raise ValueError(f"没有找到角色的可试听音频：{speaker}")
+        return dict(selected)
+    raise ValueError(f"不支持的 AudioBatch 选择模式：{mode}")
+
+
+def merge_audio_batch_items(
+    audio_batch: AudioBatch,
+    replacements: Iterable[dict[str, Any]],
+    manifest_path: str | Path,
+) -> AudioBatch:
+    """Return a non-destructive merged batch while preserving original item order."""
+    if not isinstance(audio_batch, AudioBatch):
+        raise TypeError("必须连接 AudioBatch")
+    by_id: dict[str, dict[str, Any]] = {}
+    for replacement in replacements:
+        line_id = str(replacement.get("line_id") or "").strip()
+        if not line_id:
+            raise ValueError("返修条目缺少 line_id")
+        if line_id in by_id:
+            raise ValueError(f"返修条目 line_id 重复：{line_id}")
+        by_id[line_id] = dict(replacement)
+    known = {str(item.get("line_id") or "") for item in audio_batch.items}
+    unknown = sorted(set(by_id) - known)
+    if unknown:
+        raise ValueError("返修条目不属于原 AudioBatch：" + ", ".join(unknown))
+    merged = tuple(
+        by_id.get(str(item.get("line_id") or ""), dict(item))
+        for item in audio_batch.items
+    )
+    return AudioBatch(str(Path(manifest_path)), merged)
+
+
 def create_voice_profile(
     name: str,
     prompt_audio: str | Path,

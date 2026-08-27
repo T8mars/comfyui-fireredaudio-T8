@@ -19,6 +19,7 @@
 - `17_reference_asr_tts`：参考音频一键 ASR，将逐字稿自动连接到声音克隆，并解析本次生成性能
 - `18_seed_audition`：同一句生成 4 个 Seed 候选，ASR 回读质检后输出推荐 Take 与全部候选 manifest
 - `19_long_audio_evidence`：长音频内容定位后直接裁切证据片段、输出剪辑清单并保存首个片段
+- `20_creator_qa_repair_delivery`：多角色分块批配音、逐条 QA、失败 line ID 定向返修、人工试听选择、批量下载 ZIP 与最终混音交付
 
 `ui` 目录可直接拖入 ComfyUI；`api` 目录用于 `/prompt` API。请先把示例引用的 `voice_reference.wav`、`comparison.wav`、`candidate_a.wav`、`candidate_b.wav`、`room_tone.wav`、`long_recording.wav`、`narrator_reference.wav` 或 `actor_reference.wav` 上传到 ComfyUI input，并按实际扫描结果修改模型加载器中的模型名称。
 

@@ -331,7 +331,8 @@
         "srt-demo",
         "fireredaudio/projects",
         true,
-        false
+        false,
+        8
       ]
     },
     {

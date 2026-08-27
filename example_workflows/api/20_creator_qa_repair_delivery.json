@@ -30,9 +30,9 @@
         0
       ],
       "name": "旁白",
-      "prompt_text": "这是旁白参考音频的逐字稿。",
+      "prompt_text": "这是旁白的参考音频逐字稿。",
       "language": "zh",
-      "tags": "温暖,清晰"
+      "tags": "旁白,稳定"
     }
   },
   "4": {
@@ -49,9 +49,9 @@
         0
       ],
       "name": "小夏",
-      "prompt_text": "这是小夏参考音频的逐字稿。",
+      "prompt_text": "这是小夏的参考音频逐字稿。",
       "language": "zh",
-      "tags": "年轻,自然"
+      "tags": "青年,自然"
     }
   },
   "6": {
@@ -74,10 +74,10 @@
         "6",
         0
       ],
-      "script": "旁白：欢迎收听本期节目。\n[00:00:03,000 --> 00:00:06,000] 小夏：大家好，我是小夏。",
+      "script": "旁白：欢迎进入批量创作闭环。\n小夏：未通过质检的台词会单独返修。\n旁白：通过的文件不会重新生成。",
       "source_format": "role_script",
       "default_speaker": "旁白",
-      "strict_validation": false
+      "strict_validation": true
     }
   },
   "8": {
@@ -107,7 +107,7 @@
         "6",
         0
       ],
-      "project_name": "role-demo",
+      "project_name": "creator-loop",
       "subfolder": "fireredaudio/projects",
       "resume": true,
       "continue_on_error": true,
@@ -119,21 +119,6 @@
     }
   },
   "10": {
-    "class_type": "T8_FireRedAudio_TimelineRender",
-    "inputs": {
-      "audio_batch": [
-        "9",
-        0
-      ],
-      "mode": "timeline",
-      "gap_ms": 120,
-      "crossfade_ms": 0,
-      "auto_fill_gaps": false,
-      "peak_policy": "limit",
-      "sample_rate": 24000
-    }
-  },
-  "11": {
     "class_type": "T8_FireRedAudio_SpeechQA",
     "inputs": {
       "model": [
@@ -151,15 +136,93 @@
       "max_new_tokens": 512
     }
   },
-  "12": {
-    "class_type": "T8_FireRedAudio_SaveAudio",
+  "11": {
+    "class_type": "T8_FireRedAudio_BatchRetry",
     "inputs": {
-      "audio": [
+      "model": [
+        "1",
+        0
+      ],
+      "audio_batch": [
+        "9",
+        0
+      ],
+      "script_plan": [
+        "7",
+        0
+      ],
+      "voice_bank": [
+        "6",
+        0
+      ],
+      "failed_line_ids": [
         "10",
+        2
+      ],
+      "project_name": "creator-loop-repair",
+      "subfolder": "fireredaudio/repairs",
+      "seed_strategy": "increment",
+      "seed_step": 1,
+      "max_attempts": 2,
+      "batch_size": 8,
+      "settings": [
+        "8",
+        0
+      ]
+    }
+  },
+  "12": {
+    "class_type": "T8_FireRedAudio_AudioBatchSelect",
+    "inputs": {
+      "audio_batch": [
+        "11",
+        0
+      ],
+      "selection_mode": "position",
+      "position": 1,
+      "line_id": "",
+      "speaker": ""
+    }
+  },
+  "13": {
+    "class_type": "T8_FireRedAudio_SaveAudioBatch",
+    "inputs": {
+      "audio_batch": [
+        "11",
         0
       ],
       "audio_format": "wav",
-      "filename_prefix": "role-demo-mix",
+      "project_name": "creator-loop-delivery",
+      "subfolder": "fireredaudio/exports",
+      "create_zip": true,
+      "continue_on_error": true,
+      "preview_limit": 16
+    }
+  },
+  "14": {
+    "class_type": "T8_FireRedAudio_TimelineRender",
+    "inputs": {
+      "audio_batch": [
+        "11",
+        0
+      ],
+      "mode": "sequence",
+      "gap_ms": 120,
+      "crossfade_ms": 40,
+      "auto_fill_gaps": false,
+      "peak_policy": "limit",
+      "sample_rate": 24000
+    }
+  },
+  "15": {
+    "class_type": "T8_FireRedAudio_SaveAudio",
+    "inputs": {
+      "audio": [
+        "14",
+        0
+      ],
+      "audio_format": "wav",
+      "filename_prefix": "creator-loop-master",
       "subfolder": "fireredaudio/renders"
     }
   }

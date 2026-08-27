@@ -163,7 +163,7 @@
           "name": "settings",
           "type": "T8_FIREREDAUDIO_SETTINGS",
           "links": [
-            5
+            6
           ],
           "slot_index": 0
         }

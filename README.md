@@ -1,6 +1,6 @@
 # comfyui-fireredaudio-T8
 
-FireRedAudio 的 30 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点菜单：
+FireRedAudio 的 33 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点菜单：
 
 `T8star-Aix / Audio / FireRedAudio`
 
@@ -21,7 +21,7 @@ FireRedAudio 的 30 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成�
 - 可复用音色档案与 1–8 角色音色库
 - 载入桌面整合包导出的项目交换 JSON，复用音色库、脚本和 adopted take
 - SRT、`角色：台词`、带时间码角色脚本和 JSON 的解析与生成前预检
-- 逐条落盘、原子 manifest、内容指纹缓存和中断恢复的批量配音
+- Worker `tts-batch` 分块、逐条落盘、原子 manifest、内容指纹缓存和中断恢复的批量配音；不同角色/参考音频可进入同一批 latent-first/decode-later
 - 同一参考音频的读取、重采样、RedAE 与 Patch Encoder 条件进程内复用；文件变化或模型卸载时安全失效
 - 同步有效声音起点、两遍 EBU R128 响度匹配和等长补齐的公平 A/B 对比
 - 顺序、时间码定位和叠加三种时间线渲染，相邻对白交叉淡化，以及可选 room tone 自动补真实空隙
@@ -29,6 +29,8 @@ FireRedAudio 的 30 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成�
 - 将长音频定位 JSON 直接裁成可试听证据片段、剪辑清单和可继续制作的 AudioBatch
 - 有声书、播客、视频对白交付预设，统一控制排列、LUFS、LRA、True Peak、采样率和保存格式
 - 成品逐条 ASR 回读、中文 CER/英文 WER、削波、静音和时长 QA
+- QA 失败 line ID 定向返修；支持固定/递增 Seed、多次尝试、独立返修文件和非破坏 AudioBatch/manifest 合并
+- AudioBatch 可按序号、line ID 或角色试听选择；成功 Take 可批量导出、原生下载并打包 ZIP
 - WAV、FLAC、MP3、OGG 音频与 SRT、VTT、TXT、JSONL 安全保存；保存音频节点在 ComfyUI 结果区提供原生播放器/下载入口
 - 冷/热启动、分阶段耗时、RTF 和 CUDA 峰值显存性能报告
 - 模型校验、真实 GPU/空闲显存报告、缓存清理、显存释放和 Worker 停止
@@ -101,9 +103,9 @@ python scripts/download_models.py --target "D:\ComfyUI\models\TTS\FireRedAudio" 
 3. 可选连接 `FireRedAudio 生成参数`。
 4. TTS 输出连接 `FireRedAudio 保存音频`，可选择 WAV/FLAC/MP3/OGG。
 
-示例见 `example_workflows/ui` 和 `example_workflows/api`。`15_reference_cleanup` 演示参考音频质检后再生成不覆盖源文件的清理副本；`16_synchronized_ab` 演示两个候选同步起点、匹配响度并分别保存；`17_reference_asr_tts` 演示自动逐字稿驱动 TTS；`18_seed_audition` 演示多 Seed 试音；`19_long_audio_evidence` 演示定位结果直接生成证据片段。参考清理不会执行降噪、去混响或削波伪修复。
+示例见 `example_workflows/ui` 和 `example_workflows/api`。`15_reference_cleanup` 演示参考音频质检后再生成不覆盖源文件的清理副本；`16_synchronized_ab` 演示两个候选同步起点、匹配响度并分别保存；`17_reference_asr_tts` 演示自动逐字稿驱动 TTS；`18_seed_audition` 演示多 Seed 试音；`19_long_audio_evidence` 演示定位结果直接生成证据片段；`20_creator_qa_repair_delivery` 演示分块批配音、QA 失败返修、试听选择、批量 ZIP 和最终混音交付。参考清理不会执行降噪、去混响或削波伪修复。
 
-长音频字幕是静音感知的分段级近似时间，不是词级强制对齐。普通批量配音仍采用可恢复的逐条 Worker 请求；多 Seed 试音使用专用 latent-first 批次，在顺序卸载模式中先完成候选 latent，再一次切换解码器统一解码，避免每个候选重复切换大模型。
+长音频字幕是静音感知的分段级近似时间，不是词级强制对齐。批量配音和多 Seed 试音都使用 Worker `tts-batch`；批量配音默认每批 8 条并允许不同角色参考，在顺序卸载模式中先完成本批 latent，再统一切换解码器，减少逐句切换大模型。每条结果仍独立落盘、记录和恢复。
 
 ## 配音生产工作流
 
@@ -114,6 +116,9 @@ Load Audio → 音色档案 ┐
 Load Audio → 音色档案 ├→ 音色库 → 角色脚本/SRT 预检 → 可恢复批量配音
                        └───────────────────────────────┬→ 时间线渲染 → 保存音频
 模型/隔离运行时 ───────────────────────────────────────└→ 成品语音 QA
+                                                              │失败 line ID
+                                                              ▼
+脚本计划 + 音色库 + 原 AudioBatch ───────────────→ 定向返修 → 试听选择 / 批量 ZIP / 时间线
 ```
 
 制作交付可继续连接：
@@ -143,7 +148,9 @@ room tone ─────────────────────┼→ 
 
 SRT 的正文可用 `[角色] 台词` 标记角色。JSON 可直接传数组，或传包含 `lines` 数组的对象；每项支持 `speaker`、`text`、`language`、`start_seconds`、`end_seconds`。
 
-批量配音输出到 `ComfyUI/output/<subfolder>/<project_name>/`。`manifest.json` 会在每条成功或失败后原子更新；启用恢复后，只有台词、音色参考、生成参数和模型身份指纹均一致且 WAV 仍存在的条目才会命中缓存。面向长脚本的批量配音继续采用顺序 Worker 请求，以获得逐条中断、诊断和恢复；面向同一句选 Take 的多 Seed 节点走单独的 latent-first 批次，两者不能混为同一种执行模型。
+批量配音输出到 `ComfyUI/output/<subfolder>/<project_name>/`。`manifest.json` 会在每条成功或失败后原子更新；启用恢复后，只有台词、音色参考、生成参数和模型身份指纹均一致且 WAV 仍存在的条目才会命中缓存。未命中条目按 `batch_size` 分块进入 Worker `tts-batch`；报告保存每批真实 execution model 和性能数据。若 ComfyUI 中断当前批次，已完成并写入 manifest 的条目仍可在下次运行复用。
+
+`SpeechQA.failed_line_ids` 可直接连接“QA 失败项定向返修”。返修始终写入独立目录和 `repair-manifest.json`，不会覆盖原始或已通过音频；成功条目才会替换输出 AudioBatch 中对应 line ID。返修后的 AudioBatch 可连接“试听选择”“批量保存/下载”或时间线；批量保存会生成相对独立的交付目录、`export-manifest.json` 和可选 ZIP，结果区默认显示最多 16 条原生播放器/下载入口。
 
 ## 真模型长跑验收
 
@@ -159,6 +166,8 @@ python scripts/validate_real_model_long_run.py `
 v0.9.0 在 RTX 5090 Laptop 上完成 20/20 轮真实 TTS，所有 WAV 均通过大小、时长和 SHA-256 取证；暖机后任务中位耗时 15.184 秒，CUDA 峰值分配约 19.852 GiB，任务结束显存首五轮/末五轮中位数均为 574 MiB，漂移 0 MiB。该结果只证明这台目标机器和该工作流，不外推成所有显卡的固定速度。
 
 v0.10.0 的多 Seed 专用链路另做了 2 条真模型 Smoke：Seed 4200/4201 均生成有效 24 kHz WAV，输出 5.28/4.96 秒且哈希不同；Worker 报告执行模型为 `latent_first_decode_later`，第二条复用参考条件并只进行一次批量解码器切换。冷启动总耗时包含 67.714 秒模型加载，不能拿该值代表暖机速度。
+
+v0.11.0 的新 `BatchDubbing` 包装层使用两句真实 TTS 做了独立 Smoke：2/2 生成有效 24 kHz WAV，单次 Worker 批次报告为 `latent_first_decode_later`，冷启动总耗时 120.923 秒；同一节点重新执行时 2/2 命中 Manifest，耗时 0.030 秒且两条文件 SHA-256 均未变化。该测试证明分块、落盘与恢复链路，不把冷启动时长当作通用速度结论，也没有运行 ASR。
 
 仓库每周读取固定清单中的 FireRedAudio 代码与模型 revision，并与 GitHub/Hugging Face 最新 revision 比较。发现变化只创建兼容性审计提醒，不自动升级；仍需通过宿主 Python/Transformers 矩阵、ComfyUI schema 和真模型 Smoke Test 后才能更新固定版本。
 

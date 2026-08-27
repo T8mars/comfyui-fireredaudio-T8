@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.0
+
+- “可恢复批量配音”改用 Worker `/v1/infer/tts-batch` 分块执行；支持不同角色/参考音频，在顺序显存模式中先生成一批 latent 再统一解码，并继续保留逐条指纹缓存、原子 manifest、失败隔离和 ComfyUI 取消。
+- 新增“QA 失败项定向返修”节点：直接消费 Speech QA 的失败 line ID，只返修目标台词；支持固定/递增 Seed、最多五次尝试、独立返修文件与非破坏合并 manifest。
+- 新增“AudioBatch 试听选择”节点：可按成功序号、line ID 或角色选出原生 AUDIO，并返回条目详情和批次摘要。
+- 新增“批量保存/下载”输出节点：批量导出 WAV/FLAC/MP3/OGG、注册 ComfyUI 原生试听/下载列表，并生成便携 manifest 与可选 ZIP。
+- 新增第 20 组完整创作闭环 UI/API 示例，以及无真模型执行级验收脚本，覆盖 `2+1` 分块、Manifest 恢复、QA Seed 返修、源文件不覆盖和 ZIP 交付。
+- 新 `BatchDubbing` 包装层真模型两句 Smoke 通过：2/2 有效 WAV、单次 `latent_first_decode_later` 批次；重新执行 2/2 Manifest 命中、0.030 秒完成且输出哈希不变。
+- 节点总数增至 33；宿主继续零依赖，隔离 Worker 继续固定 Transformers 5.8，模型仍外置。
+
 ## 0.10.0
 
 - 新增“参考音频 ASR 逐字稿”节点；逐字稿可直接连接 TTS/音色档案，TTS 留空时也可自动 ASR 后继续生成并回传实际逐字稿。

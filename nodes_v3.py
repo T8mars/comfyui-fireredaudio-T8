@@ -9,6 +9,8 @@ import statistics
 import sys
 import threading
 import uuid
+import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,9 @@ from .runtime.audio_adapter import (
     _safe_name,
     _safe_output_dir,
     audio_to_wav,
+    export_audio_path,
     output_wav_path,
+    saved_audio_files_ui,
     saved_audio_ui,
     save_audio_file,
     save_text_file,
@@ -48,13 +52,17 @@ from .runtime.production import (
     can_reuse_manifest_item,
     create_voice_bank,
     create_voice_profile,
+    file_digest,
     line_fingerprint,
     load_manifest,
     load_project_exchange,
     manifest_items_by_id,
+    merge_audio_batch_items,
+    parse_line_ids,
     parse_script,
     render_timeline_to_wav,
     stable_digest,
+    select_audio_batch_item,
     text_error_rate,
     wav_metrics,
     write_manifest,
@@ -1366,6 +1374,7 @@ class T8FireRedAudioBatchDubbing(io.ComfyNode):
                 io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/projects"),
                 io.Boolean.Input("resume", display_name="从 manifest 恢复", default=True),
                 io.Boolean.Input("continue_on_error", display_name="单条失败后继续", default=True),
+                io.Int.Input("batch_size", display_name="每批条数", default=8, min=1, max=32, tooltip="每批先生成全部 latent，再统一切换解码器；24GB 显存建议 4–8。"),
                 SettingsType.Input("settings", display_name="生成参数", optional=True),
             ],
             outputs=[
@@ -1389,6 +1398,7 @@ class T8FireRedAudioBatchDubbing(io.ComfyNode):
         subfolder: str,
         resume: bool,
         continue_on_error: bool,
+        batch_size: int = 8,
         settings: GenerationSettings | None = None,
         **kwargs,
     ) -> str:
@@ -1420,6 +1430,7 @@ class T8FireRedAudioBatchDubbing(io.ComfyNode):
                     "subfolder": clean_subfolder,
                     "resume": resume,
                     "continue_on_error": continue_on_error,
+                    "batch_size": int(batch_size),
                     "manifest_state": manifest_state,
                 }
             )
@@ -1436,6 +1447,7 @@ class T8FireRedAudioBatchDubbing(io.ComfyNode):
         subfolder: str,
         resume: bool,
         continue_on_error: bool,
+        batch_size: int = 8,
         settings: GenerationSettings | None = None,
     ) -> io.NodeOutput:
         if not isinstance(script_plan, ScriptPlan) or not isinstance(voice_bank, VoiceBank):
@@ -1459,6 +1471,7 @@ class T8FireRedAudioBatchDubbing(io.ComfyNode):
                 "acceleration_mode": model.acceleration_mode,
             }
         )
+        effective_batch_size = max(1, min(32, int(batch_size)))
         manifest_payload: dict[str, Any] = {
             "manifest_version": MANIFEST_VERSION,
             "project_name": project,
@@ -1470,6 +1483,7 @@ class T8FireRedAudioBatchDubbing(io.ComfyNode):
         }
         generated = cached = failed = 0
         total = len(script_plan.lines)
+        pending: list[dict[str, Any]] = []
         for position, line in enumerate(script_plan.lines, 1):
             profile = voice_bank.resolve(line.speaker)
             if profile is None:
@@ -1492,48 +1506,143 @@ class T8FireRedAudioBatchDubbing(io.ComfyNode):
                 item.update(status="complete", cache_hit=True, worker_report=old.get("worker_report", {}))
                 cached += 1
             else:
-                try:
-                    request = _base_request(model, "tts", _settings(settings))
-                    request.update(
-                        {
-                            "prompt_audio": profile.prompt_audio,
-                            "prompt_text": profile.prompt_text,
-                            "target_text": line.text,
-                            "language": line.language,
-                            "output_path": str(target),
-                        }
-                    )
-                    result = _infer(model, request)
-                    actual = Path(str(result.get("output_path") or target))
-                    if not actual.is_file():
-                        raise RuntimeError("Worker 未产生预期音频文件")
-                    if actual.resolve() != target:
-                        shutil.copy2(actual, target)
-                    item.update(status="complete", cache_hit=False, worker_report=result)
-                    generated += 1
-                except Exception as exc:
-                    if _is_processing_interrupt(exc):
-                        raise
-                    item.update(status="failed", cache_hit=False, error=f"{type(exc).__name__}: {exc}")
-                    failed += 1
-                    manifest_payload["items"].append(item)
-                    write_manifest(manifest_path, manifest_payload)
-                    _set_official_progress(position / max(1, total))
-                    if not continue_on_error:
-                        raise
-                    continue
+                item.update(status="pending", cache_hit=False)
+                request = _base_request(model, "tts", _settings(settings))
+                request.update(
+                    {
+                        "task_id": f"dubbing-{project}-{line.line_id}",
+                        "prompt_audio": profile.prompt_audio,
+                        "prompt_text": profile.prompt_text,
+                        "target_text": line.text,
+                        "language": line.language,
+                        "output_path": str(target),
+                        "release_after": False,
+                    }
+                )
+                pending.append(
+                    {
+                        "position": position,
+                        "item": item,
+                        "target": target,
+                        "request": request,
+                    }
+                )
             manifest_payload["items"].append(item)
+        write_manifest(manifest_path, manifest_payload)
+
+        batch_reports: list[dict[str, Any]] = []
+        hard_error: BaseException | None = None
+        for chunk_start in range(0, len(pending), effective_batch_size):
+            chunk = pending[chunk_start : chunk_start + effective_batch_size]
+            requests = [dict(entry["request"]) for entry in chunk]
+            is_last_chunk = chunk_start + len(chunk) >= len(pending)
+            if is_last_chunk and model.release_after:
+                for request in requests:
+                    request["release_after"] = True
+            try:
+                batch_result = _infer_tts_batch(model, requests)
+                outcomes = {
+                    int(outcome.get("index", -1)): outcome
+                    for outcome in batch_result.get("outcomes", [])
+                    if isinstance(outcome, dict)
+                }
+                batch_reports.append(dict(batch_result.get("performance") or {}))
+                for local_index, entry in enumerate(chunk):
+                    item = entry["item"]
+                    target = entry["target"]
+                    outcome = outcomes.get(local_index)
+                    try:
+                        if not outcome:
+                            raise RuntimeError("Worker 批量结果缺少对应条目")
+                        if not outcome.get("ok"):
+                            raise RuntimeError(str(outcome.get("error") or "Worker 批量 TTS 失败"))
+                        result = dict(outcome.get("result") or {})
+                        actual = Path(str(result.get("output_path") or target))
+                        if not actual.is_file():
+                            raise RuntimeError("Worker 未产生预期音频文件")
+                        if actual.resolve() != target:
+                            shutil.copy2(actual, target)
+                        item.update(
+                            status="complete",
+                            cache_hit=False,
+                            worker_report=result,
+                        )
+                        item.pop("error", None)
+                        generated += 1
+                    except Exception as exc:
+                        item.update(
+                            status="failed",
+                            cache_hit=False,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                        failed += 1
+                        if not continue_on_error and hard_error is None:
+                            hard_error = exc
+                    write_manifest(manifest_path, manifest_payload)
+                    completed_positions = cached + generated + failed
+                    _set_official_progress(completed_positions / max(1, total))
+            except BaseException as exc:
+                if _is_processing_interrupt(exc) or not isinstance(exc, Exception):
+                    write_manifest(manifest_path, manifest_payload)
+                    if model.release_after:
+                        try:
+                            _client(model).unload()
+                        except Exception as unload_exc:
+                            LOGGER.warning("批量取消后释放 Worker 模型失败：%s", unload_exc)
+                    raise
+                for entry in chunk:
+                    item = entry["item"]
+                    item.update(
+                        status="failed",
+                        cache_hit=False,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    failed += 1
+                write_manifest(manifest_path, manifest_payload)
+                if not continue_on_error:
+                    if model.release_after:
+                        try:
+                            _client(model).unload()
+                        except Exception as unload_exc:
+                            LOGGER.warning("批量失败后释放 Worker 模型失败：%s", unload_exc)
+                    raise
+            if hard_error is not None:
+                break
+
+        if hard_error is not None:
             write_manifest(manifest_path, manifest_payload)
-            _set_official_progress(position / max(1, total))
+            if model.release_after:
+                try:
+                    _client(model).unload()
+                except Exception as unload_exc:
+                    LOGGER.warning("批量失败后释放 Worker 模型失败：%s", unload_exc)
+            raise RuntimeError(f"批量配音存在失败条目：{hard_error}") from hard_error
         batch = AudioBatch(str(manifest_path), tuple(manifest_payload["items"]))
+        execution_models = sorted(
+            {
+                str(report.get("execution_model"))
+                for report in batch_reports
+                if report.get("execution_model")
+            }
+        )
         report = {
             "manifest_path": str(manifest_path),
             "total": total,
             "generated": generated,
             "cache_hits": cached,
             "failed": failed,
-            "execution_model": "sequential_worker_calls",
+            "batch_size": effective_batch_size,
+            "batch_count": len(batch_reports),
+            "execution_model": (
+                "manifest_cache_only"
+                if not batch_reports
+                else execution_models[0]
+                if len(execution_models) == 1
+                else execution_models
+            ),
+            "worker_batch_route": True,
             "native_tensor_batch": False,
+            "performance": batch_reports,
         }
         return io.NodeOutput(batch, str(manifest_path), _json(report))
 
@@ -1828,6 +1937,519 @@ class T8FireRedAudioSpeechQA(io.ComfyNode):
         return io.NodeOutput(qa, _json(qa), "\n".join(failed_ids))
 
 
+class T8FireRedAudioBatchRetry(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_BatchRetry",
+            display_name="FireRedAudio QA 失败项定向返修 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "消费 SpeechQA 的失败 line ID，只返修失败台词；输出非破坏合并后的新 AudioBatch 和独立返修 manifest。"
+            ),
+            inputs=[
+                ModelType.Input("model"),
+                AudioBatchType.Input("audio_batch", display_name="原批量音频"),
+                ScriptPlanType.Input("script_plan", display_name="原脚本计划"),
+                VoiceBankType.Input("voice_bank", display_name="原音色库"),
+                io.String.Input("failed_line_ids", display_name="失败 line ID", multiline=True, force_input=True),
+                io.String.Input("project_name", display_name="返修项目名", default="qa-repair"),
+                io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/repairs"),
+                io.Combo.Input("seed_strategy", display_name="Seed 策略", options=["increment", "fixed"], default="increment"),
+                io.Int.Input("seed_step", display_name="每次 Seed 增量", default=1, min=1, max=100000),
+                io.Int.Input("max_attempts", display_name="最多尝试次数", default=2, min=1, max=5),
+                io.Int.Input("batch_size", display_name="每批条数", default=8, min=1, max=32),
+                SettingsType.Input("settings", display_name="生成参数", optional=True),
+            ],
+            outputs=[
+                AudioBatchType.Output("audio_batch", display_name="返修后批量音频"),
+                io.String.Output("manifest_path", display_name="返修 Manifest 路径"),
+                io.String.Output("repair_report", display_name="返修报告"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        model: RuntimeHandle,
+        audio_batch: AudioBatch,
+        script_plan: ScriptPlan,
+        voice_bank: VoiceBank,
+        failed_line_ids: str,
+        project_name: str,
+        subfolder: str,
+        seed_strategy: str,
+        seed_step: int,
+        max_attempts: int,
+        batch_size: int,
+        settings: GenerationSettings | None = None,
+        **kwargs,
+    ) -> str:
+        return stable_digest(
+            {
+                "model": model.to_dict(),
+                "audio_batch": _audio_batch_state(audio_batch),
+                "script_plan": script_plan.to_dict() if isinstance(script_plan, ScriptPlan) else None,
+                "voice_bank": voice_bank.to_dict() if isinstance(voice_bank, VoiceBank) else None,
+                "failed_line_ids": parse_line_ids(failed_line_ids),
+                "project_name": project_name,
+                "subfolder": subfolder,
+                "seed_strategy": seed_strategy,
+                "seed_step": int(seed_step),
+                "max_attempts": int(max_attempts),
+                "batch_size": int(batch_size),
+                "settings": _settings(settings).to_dict(),
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model: RuntimeHandle,
+        audio_batch: AudioBatch,
+        script_plan: ScriptPlan,
+        voice_bank: VoiceBank,
+        failed_line_ids: str,
+        project_name: str,
+        subfolder: str,
+        seed_strategy: str,
+        seed_step: int,
+        max_attempts: int,
+        batch_size: int,
+        settings: GenerationSettings | None = None,
+    ) -> io.NodeOutput:
+        if not isinstance(audio_batch, AudioBatch):
+            raise TypeError("定向返修必须连接原 AudioBatch")
+        if not isinstance(script_plan, ScriptPlan) or not isinstance(voice_bank, VoiceBank):
+            raise TypeError("定向返修必须连接原脚本计划和音色库")
+        if not script_plan.valid:
+            raise ValueError("原脚本计划预检存在错误，不能返修")
+        target_ids = parse_line_ids(failed_line_ids)
+        if not target_ids:
+            report = {
+                "manifest_path": audio_batch.manifest_path,
+                "source_manifest_path": audio_batch.manifest_path,
+                "requested": 0,
+                "repaired": 0,
+                "failed": 0,
+                "repaired_line_ids": [],
+                "failed_line_ids": [],
+                "action": "passthrough_no_qa_failures",
+                "source_files_overwritten": False,
+            }
+            return io.NodeOutput(audio_batch, audio_batch.manifest_path, _json(report))
+        if seed_strategy not in {"increment", "fixed"}:
+            raise ValueError(f"不支持的 Seed 策略：{seed_strategy}")
+        original_by_id = {
+            str(item.get("line_id") or ""): dict(item) for item in audio_batch.items
+        }
+        line_by_id = {line.line_id: line for line in script_plan.lines}
+        unknown = [line_id for line_id in target_ids if line_id not in original_by_id or line_id not in line_by_id]
+        if unknown:
+            raise ValueError("失败 line ID 不属于当前脚本/AudioBatch：" + ", ".join(unknown))
+
+        project = _safe_name(project_name, "qa-repair")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/repairs"
+        project_dir = _safe_output_dir(f"{clean_subfolder}/{project}")
+        manifest_path = project_dir / "repair-manifest.json"
+        base_settings = _settings(settings)
+        base_config = base_settings.to_dict()
+        effective_batch_size = max(1, min(32, int(batch_size)))
+        effective_attempts = max(1, min(5, int(max_attempts)))
+        replacements: dict[str, dict[str, Any]] = {}
+        for line_id in target_ids:
+            item = dict(original_by_id[line_id])
+            item.update(
+                status="repair_pending",
+                original_output_path=str(item.get("output_path") or ""),
+                repair_attempts=[],
+            )
+            replacements[line_id] = item
+
+        def merged_items() -> list[dict[str, Any]]:
+            return [
+                replacements.get(str(item.get("line_id") or ""), dict(item))
+                for item in audio_batch.items
+            ]
+
+        manifest_payload: dict[str, Any] = {
+            "manifest_version": MANIFEST_VERSION,
+            "project_name": project,
+            "source_manifest_path": audio_batch.manifest_path,
+            "target_line_ids": list(target_ids),
+            "settings": base_config,
+            "seed_strategy": seed_strategy,
+            "seed_step": int(seed_step),
+            "max_attempts": effective_attempts,
+            "items": merged_items(),
+        }
+        write_manifest(manifest_path, manifest_payload)
+        remaining = list(target_ids)
+        performance: list[dict[str, Any]] = []
+        total_calls = 0
+        try:
+            for attempt in range(1, effective_attempts + 1):
+                if not remaining:
+                    break
+                jobs: list[dict[str, Any]] = []
+                attempt_seed = int(base_config.get("seed", 42))
+                if seed_strategy == "increment":
+                    attempt_seed += (attempt - 1) * int(seed_step)
+                for line_id in remaining:
+                    line = line_by_id[line_id]
+                    profile = voice_bank.resolve(line.speaker)
+                    if profile is None:
+                        raise ValueError(f"角色没有音色档案：{line.speaker}")
+                    target = project_dir / (
+                        _safe_name(
+                            f"{line.index:04d}-{line.speaker}-{line.line_id}-repair-a{attempt:02d}",
+                            f"line-{line.index:04d}-repair-a{attempt:02d}",
+                        )
+                        + ".wav"
+                    )
+                    request = _base_request(model, "tts", base_settings)
+                    request.update(
+                        {
+                            "task_id": f"repair-{project}-{line.line_id}-a{attempt}",
+                            "prompt_audio": profile.prompt_audio,
+                            "prompt_text": profile.prompt_text,
+                            "target_text": line.text,
+                            "language": line.language,
+                            "seed": attempt_seed,
+                            "output_path": str(target),
+                            "release_after": False,
+                        }
+                    )
+                    jobs.append({"line_id": line_id, "target": target, "request": request, "seed": attempt_seed})
+
+                next_remaining: list[str] = []
+                for chunk_start in range(0, len(jobs), effective_batch_size):
+                    chunk = jobs[chunk_start : chunk_start + effective_batch_size]
+                    total_calls += 1
+                    try:
+                        result = _infer_tts_batch(model, [dict(job["request"]) for job in chunk])
+                        outcomes = {
+                            int(outcome.get("index", -1)): outcome
+                            for outcome in result.get("outcomes", [])
+                            if isinstance(outcome, dict)
+                        }
+                        performance.append(dict(result.get("performance") or {}))
+                    except BaseException as exc:
+                        if _is_processing_interrupt(exc) or not isinstance(exc, Exception):
+                            manifest_payload["items"] = merged_items()
+                            write_manifest(manifest_path, manifest_payload)
+                            raise
+                        outcomes = {
+                            index: {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                            for index in range(len(chunk))
+                        }
+                    for local_index, job in enumerate(chunk):
+                        line_id = job["line_id"]
+                        item = replacements[line_id]
+                        outcome = outcomes.get(local_index)
+                        attempt_record = {
+                            "attempt": attempt,
+                            "seed": job["seed"],
+                            "output_path": str(job["target"]),
+                        }
+                        try:
+                            if not outcome:
+                                raise RuntimeError("Worker 批量结果缺少对应返修条目")
+                            if not outcome.get("ok"):
+                                raise RuntimeError(str(outcome.get("error") or "Worker 返修失败"))
+                            worker_report = dict(outcome.get("result") or {})
+                            actual = Path(str(worker_report.get("output_path") or job["target"]))
+                            if not actual.is_file():
+                                raise RuntimeError("Worker 未产生返修音频")
+                            if actual.resolve() != job["target"]:
+                                shutil.copy2(actual, job["target"])
+                            attempt_record.update(status="complete", worker_report=worker_report)
+                            item["repair_attempts"].append(attempt_record)
+                            item.update(
+                                status="complete",
+                                output_path=str(job["target"]),
+                                cache_hit=False,
+                                repaired=True,
+                                repair_seed=job["seed"],
+                                worker_report=worker_report,
+                            )
+                            item.pop("error", None)
+                        except Exception as exc:
+                            attempt_record.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+                            item["repair_attempts"].append(attempt_record)
+                            item.update(status="repair_failed", error=attempt_record["error"])
+                            next_remaining.append(line_id)
+                        manifest_payload["items"] = merged_items()
+                        write_manifest(manifest_path, manifest_payload)
+                remaining = list(dict.fromkeys(next_remaining))
+        finally:
+            if model.release_after:
+                try:
+                    _client(model).unload()
+                except Exception as exc:
+                    LOGGER.warning("返修结束后释放 Worker 模型失败：%s", exc)
+
+        for line_id in remaining:
+            replacements[line_id]["status"] = "failed"
+        merged_batch = merge_audio_batch_items(audio_batch, replacements.values(), manifest_path)
+        manifest_payload["items"] = list(merged_batch.items)
+        write_manifest(manifest_path, manifest_payload)
+        repaired_ids = [line_id for line_id in target_ids if replacements[line_id].get("status") == "complete"]
+        report = {
+            "manifest_path": str(manifest_path),
+            "source_manifest_path": audio_batch.manifest_path,
+            "requested": len(target_ids),
+            "repaired": len(repaired_ids),
+            "failed": len(remaining),
+            "repaired_line_ids": repaired_ids,
+            "failed_line_ids": remaining,
+            "seed_strategy": seed_strategy,
+            "seed_step": int(seed_step),
+            "max_attempts": effective_attempts,
+            "batch_size": effective_batch_size,
+            "worker_batch_calls": total_calls,
+            "performance": performance,
+            "source_files_overwritten": False,
+        }
+        return io.NodeOutput(merged_batch, str(manifest_path), _json(report))
+
+
+class T8FireRedAudioAudioBatchSelect(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_AudioBatchSelect",
+            display_name="FireRedAudio AudioBatch 试听选择 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="按成功序号、line ID 或角色选出一条音频，返回原生 AUDIO、条目详情和批次摘要。",
+            inputs=[
+                AudioBatchType.Input("audio_batch", display_name="批量音频"),
+                io.Combo.Input("selection_mode", display_name="选择方式", options=["position", "line_id", "speaker"], default="position"),
+                io.Int.Input("position", display_name="成功音频序号（从 1 开始）", default=1, min=1, max=100000),
+                io.String.Input("line_id", display_name="line ID", default="", optional=True),
+                io.String.Input("speaker", display_name="角色", default="", optional=True),
+            ],
+            outputs=[
+                io.Audio.Output("audio", display_name="选中音频"),
+                io.String.Output("item_json", display_name="选中条目 JSON"),
+                io.String.Output("selected_line_id", display_name="选中 line ID"),
+                io.String.Output("batch_summary", display_name="批次摘要"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        audio_batch: AudioBatch,
+        selection_mode: str,
+        position: int,
+        line_id: str,
+        speaker: str,
+        **kwargs,
+    ) -> str:
+        return stable_digest(
+            {
+                "audio_batch": _audio_batch_state(audio_batch),
+                "selection_mode": selection_mode,
+                "position": int(position),
+                "line_id": line_id,
+                "speaker": speaker,
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        audio_batch: AudioBatch,
+        selection_mode: str,
+        position: int,
+        line_id: str,
+        speaker: str,
+    ) -> io.NodeOutput:
+        item = select_audio_batch_item(
+            audio_batch,
+            mode=selection_mode,
+            position=position,
+            line_id=line_id,
+            speaker=speaker,
+        )
+        path = Path(str(item["output_path"]))
+        summary = {
+            "manifest_path": audio_batch.manifest_path,
+            "total": len(audio_batch.items),
+            "playable": len(audio_batch.successful_items()),
+            "selected_line_id": item.get("line_id"),
+            "selected_speaker": item.get("speaker"),
+            "selected_path": str(path),
+        }
+        ui: dict[str, Any] = {}
+        try:
+            ui = saved_audio_ui(path)
+        except ValueError:
+            pass
+        return io.NodeOutput(
+            wav_to_audio(path),
+            _json(item),
+            str(item.get("line_id") or ""),
+            _json(summary),
+            ui=ui,
+        )
+
+
+class T8FireRedAudioSaveAudioBatch(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_SaveAudioBatch",
+            display_name="FireRedAudio 批量保存/下载 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description="把成功 Take 批量复制或转码到 ComfyUI output，生成便携 Manifest 和可选 ZIP，并注册原生试听/下载列表。",
+            inputs=[
+                AudioBatchType.Input("audio_batch", display_name="批量音频"),
+                io.Combo.Input("audio_format", display_name="格式", options=["wav", "flac", "mp3", "ogg"], default="wav"),
+                io.String.Input("project_name", display_name="导出项目名", default="fireredaudio-batch"),
+                io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/exports"),
+                io.Boolean.Input("create_zip", display_name="创建 ZIP 制作包", default=True),
+                io.Boolean.Input("continue_on_error", display_name="单条导出失败后继续", default=True),
+                io.Int.Input("preview_limit", display_name="结果区最多试听条数", default=16, min=1, max=100),
+            ],
+            outputs=[
+                AudioBatchType.Output("audio_batch", display_name="原 AudioBatch（透传）"),
+                io.String.Output("manifest_path", display_name="导出 Manifest 路径"),
+                io.String.Output("zip_path", display_name="ZIP 路径"),
+                io.String.Output("export_report", display_name="导出报告"),
+            ],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        audio_batch: AudioBatch,
+        audio_format: str,
+        project_name: str,
+        subfolder: str,
+        create_zip: bool,
+        continue_on_error: bool,
+        preview_limit: int,
+        **kwargs,
+    ) -> str:
+        return stable_digest(
+            {
+                "audio_batch": _audio_batch_state(audio_batch),
+                "audio_format": audio_format,
+                "project_name": project_name,
+                "subfolder": subfolder,
+                "create_zip": create_zip,
+                "continue_on_error": continue_on_error,
+                "preview_limit": int(preview_limit),
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        audio_batch: AudioBatch,
+        audio_format: str,
+        project_name: str,
+        subfolder: str,
+        create_zip: bool,
+        continue_on_error: bool,
+        preview_limit: int,
+    ) -> io.NodeOutput:
+        if not isinstance(audio_batch, AudioBatch):
+            raise TypeError("批量保存必须连接 AudioBatch")
+        source_items = audio_batch.successful_items()
+        if not source_items:
+            raise ValueError("AudioBatch 中没有可以保存的成功音频")
+        extension = str(audio_format).lower()
+        if extension not in {"wav", "flac", "mp3", "ogg"}:
+            raise ValueError("audio_format 必须是 wav/flac/mp3/ogg")
+        project = _safe_name(project_name, "fireredaudio-batch")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/exports"
+        export_dir = _safe_output_dir(f"{clean_subfolder}/{project}-{stamp}")
+        saved_items: list[dict[str, Any]] = []
+        saved_paths: list[Path] = []
+        failures: list[dict[str, str]] = []
+        used_names: set[str] = set()
+        for position, source_item in enumerate(source_items, 1):
+            source = Path(str(source_item.get("output_path") or ""))
+            base = _safe_name(
+                f"{int(source_item.get('index') or position):04d}-{source_item.get('speaker') or 'take'}-{source_item.get('line_id') or position}",
+                f"take-{position:04d}",
+            )
+            candidate = base
+            suffix = 2
+            while candidate.casefold() in used_names:
+                candidate = f"{base}-{suffix}"
+                suffix += 1
+            used_names.add(candidate.casefold())
+            target = export_dir / f"{candidate}.{extension}"
+            item = dict(source_item)
+            try:
+                export_audio_path(source, target, audio_format=extension)
+                item.update(
+                    output_path=str(target),
+                    source_output_path=str(source),
+                    export_sha256=file_digest(target),
+                    export_format=extension,
+                    status="complete",
+                )
+                saved_paths.append(target)
+            except Exception as exc:
+                failure = {
+                    "line_id": str(source_item.get("line_id") or position),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                failures.append(failure)
+                item.update(status="failed", error=failure["error"], source_output_path=str(source))
+                if not continue_on_error:
+                    raise
+            saved_items.append(item)
+            _set_official_progress(position / max(1, len(source_items)))
+        manifest_path = export_dir / "export-manifest.json"
+        manifest_payload = {
+            "manifest_version": MANIFEST_VERSION,
+            "project_name": project,
+            "source_manifest_path": audio_batch.manifest_path,
+            "audio_format": extension,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "items": saved_items,
+        }
+        write_manifest(manifest_path, manifest_payload)
+        zip_path: Path | None = None
+        if create_zip:
+            zip_path = export_dir.parent / f"{export_dir.name}.zip"
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for path in sorted(export_dir.rglob("*")):
+                    if path.is_file():
+                        archive.write(path, path.relative_to(export_dir).as_posix())
+        preview_count = max(1, min(100, int(preview_limit)))
+        report = {
+            "manifest_path": str(manifest_path),
+            "zip_path": str(zip_path) if zip_path else "",
+            "source_count": len(source_items),
+            "saved": len(saved_paths),
+            "failed": len(failures),
+            "failures": failures,
+            "audio_format": extension,
+            "previewed": min(len(saved_paths), preview_count),
+            "output_directory": str(export_dir),
+            "source_files_overwritten": False,
+        }
+        return io.NodeOutput(
+            audio_batch,
+            str(manifest_path),
+            str(zip_path) if zip_path else "",
+            _json(report),
+            ui=saved_audio_files_ui(saved_paths[:preview_count]),
+        )
+
+
 class T8FireRedAudioSaveAudio(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -2044,6 +2666,9 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioSynchronizedAB,
             T8FireRedAudioTimelineRender,
             T8FireRedAudioSpeechQA,
+            T8FireRedAudioBatchRetry,
+            T8FireRedAudioAudioBatchSelect,
+            T8FireRedAudioSaveAudioBatch,
             T8FireRedAudioSaveAudio,
             T8FireRedAudioSaveSubtitle,
             T8FireRedAudioRuntimeControl,

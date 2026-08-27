@@ -506,6 +506,35 @@ class ExampleWorkflowTests(unittest.TestCase):
                 self.assertIn(source, node_ids, name)
                 self.assertIn(target, node_ids, name)
 
+    def test_v011_creator_loop_connects_qa_retry_selection_and_batch_delivery(self) -> None:
+        name = "20_creator_qa_repair_delivery"
+        ui = json.loads((ROOT / "example_workflows" / "ui" / f"{name}.json").read_text(encoding="utf-8"))
+        api = json.loads((ROOT / "example_workflows" / "api" / f"{name}.json").read_text(encoding="utf-8"))
+        required = {
+            "T8_FireRedAudio_BatchDubbing",
+            "T8_FireRedAudio_SpeechQA",
+            "T8_FireRedAudio_BatchRetry",
+            "T8_FireRedAudio_AudioBatchSelect",
+            "T8_FireRedAudio_SaveAudioBatch",
+            "T8_FireRedAudio_TimelineRender",
+        }
+        self.assertTrue(required.issubset({value["class_type"] for value in api.values()}))
+        batch_id = next(key for key, value in api.items() if value["class_type"] == "T8_FireRedAudio_BatchDubbing")
+        qa_id = next(key for key, value in api.items() if value["class_type"] == "T8_FireRedAudio_SpeechQA")
+        retry_id = next(key for key, value in api.items() if value["class_type"] == "T8_FireRedAudio_BatchRetry")
+        select_id = next(key for key, value in api.items() if value["class_type"] == "T8_FireRedAudio_AudioBatchSelect")
+        export_id = next(key for key, value in api.items() if value["class_type"] == "T8_FireRedAudio_SaveAudioBatch")
+        self.assertEqual(api[batch_id]["inputs"]["batch_size"], 8)
+        self.assertEqual(api[retry_id]["inputs"]["audio_batch"], [batch_id, 0])
+        self.assertEqual(api[retry_id]["inputs"]["failed_line_ids"], [qa_id, 2])
+        self.assertEqual(api[select_id]["inputs"]["audio_batch"], [retry_id, 0])
+        self.assertEqual(api[export_id]["inputs"]["audio_batch"], [retry_id, 0])
+        self.assertTrue(api[export_id]["inputs"]["create_zip"])
+        node_ids = {node["id"] for node in ui["nodes"]}
+        for _link_id, source, _slot, target, _target_slot, _kind in ui["links"]:
+            self.assertIn(source, node_ids)
+            self.assertIn(target, node_ids)
+
 
 class EvidenceClipTests(unittest.TestCase):
     def test_extracts_common_time_formats_and_deduplicates(self) -> None:

@@ -88,6 +88,7 @@
       "subfolder": "fireredaudio/projects",
       "resume": true,
       "continue_on_error": false,
+      "batch_size": 8,
       "settings": [
         "6",
         0
