@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import math
+import shutil
 import sys
 import tempfile
 import wave
@@ -147,6 +148,7 @@ def main() -> int:
                 raise AssertionError("Manifest 恢复没有完整复用成功条目")
 
             original_line1 = Path(resumed_batch.items[0]["output_path"])
+            original_line2 = Path(resumed_batch.items[1]["output_path"])
             original_digest = production.file_digest(original_line1)
             repair_calls: list[list[dict]] = []
 
@@ -157,7 +159,11 @@ def main() -> int:
                 for index, request in enumerate(requests):
                     attempt = len(repair_calls)
                     if attempt == 1:
-                        outcomes.append({"ok": False, "index": index, "error": "simulated QA retry"})
+                        path = Path(request["output_path"])
+                        shutil.copy2(original_line2, path)
+                        outcomes.append(
+                            {"ok": True, "index": index, "result": {"output_path": str(path)}}
+                        )
                     else:
                         path = Path(request["output_path"])
                         write_tone(path, frequency=770.0)
@@ -189,10 +195,12 @@ def main() -> int:
             )
             repaired_batch, repair_manifest, repair_report_text = repaired.result
             repair_report = json.loads(repair_report_text)
-            if [call[0]["seed"] for call in repair_calls] != [42, 49]:
+            if [call[0]["seed"] for call in repair_calls] != [49, 56]:
                 raise AssertionError("返修 Seed 增量不正确")
             if repair_report["repaired_line_ids"] != ["line-2"]:
                 raise AssertionError("失败项没有在第二次尝试中完成返修")
+            if repair_report["duplicate_rejected_line_ids"] != ["line-2"]:
+                raise AssertionError("与原 Take 同哈希的返修结果没有被拒绝")
             if production.file_digest(original_line1) != original_digest:
                 raise AssertionError("返修覆盖了已通过的源音频")
             if repaired_batch.items[0]["output_path"] != resumed_batch.items[0]["output_path"]:

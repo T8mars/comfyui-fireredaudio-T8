@@ -277,6 +277,23 @@ def main() -> int:
             512,
         )
         final_qa, final_qa_text, final_qa_failed = final_qa_output.result
+        cached_qa_started = time.perf_counter()
+        cached_qa_output = nodes.T8FireRedAudioSpeechQA.execute(
+            handle,
+            final_source_batch,
+            1.0,
+            0.001,
+            0.80,
+            0.10,
+            512,
+        )
+        cached_qa_report = json.loads(cached_qa_output.result[1])
+        cached_qa_elapsed = round(time.perf_counter() - cached_qa_started, 3)
+        cached_summary = cached_qa_report.get("asr_cache") or {}
+        if cached_summary.get("hits") != cached_qa_report.get("total"):
+            raise AssertionError("重复 QA 没有 100% 命中 ASR 转写缓存")
+        if cached_summary.get("misses") != 0:
+            raise AssertionError("重复 QA 仍触发了 ASR 推理")
         final_review_output = nodes.T8FireRedAudioLineReview.execute(
             final_source_batch,
             '{"real-line-1":"approve","real-line-2":"approve"}',
@@ -346,6 +363,8 @@ def main() -> int:
             "repair_outcome": repair_outcome,
             "final_qa": json.loads(final_qa_text),
             "final_qa_failed_line_ids": final_qa_failed.splitlines(),
+            "cached_qa": cached_qa_report,
+            "cached_qa_elapsed_seconds": cached_qa_elapsed,
             "final_review": final_review_report,
             "artifacts": {
                 "generated_manifest": str(generated_manifest),

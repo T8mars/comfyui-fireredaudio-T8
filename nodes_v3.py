@@ -19,6 +19,11 @@ from typing import Any
 from comfy_api.latest import ComfyExtension, io
 
 from .runtime.acoustic import acoustic_instruction
+from .runtime.asr_cache import (
+    build_asr_cache_descriptor,
+    load_cached_transcript,
+    store_cached_transcript,
+)
 from .runtime.audio_adapter import (
     _safe_name,
     _safe_output_dir,
@@ -106,7 +111,7 @@ AudioBatchType = io.Custom("T8_FIREREDAUDIO_AUDIO_BATCH")
 SpeechQAType = io.Custom("T8_FIREREDAUDIO_SPEECH_QA")
 DeliveryPresetType = io.Custom("T8_FIREREDAUDIO_DELIVERY_PRESET")
 LocalRepairPlanType = io.Custom("T8_FIREREDAUDIO_LOCAL_REPAIR_PLAN")
-NODE_VERSION = "0.14.0"
+NODE_VERSION = "0.15.0"
 
 LONG_LOCATE_PROMPTS = {
     "timeline_summary": (
@@ -2369,6 +2374,8 @@ class T8FireRedAudioSpeechQA(io.ComfyNode):
                 io.Float.Input("max_silence_ratio", display_name="最大静音比例", default=0.80, min=0.0, max=1.0, step=0.01),
                 io.Float.Input("max_cue_overrun_seconds", display_name="最大超出时间槽（秒）", default=0.50, min=0.0, max=60.0, step=0.1),
                 io.Int.Input("max_new_tokens", display_name="ASR 最大新 Token", default=512, min=1, max=4096),
+                io.Boolean.Input("use_asr_cache", display_name="复用 ASR 转写缓存", default=True, advanced=True),
+                io.Boolean.Input("refresh_asr_cache", display_name="强制刷新 ASR 缓存", default=False, advanced=True),
             ],
             outputs=[
                 SpeechQAType.Output("qa", display_name="语音 QA"),
@@ -2387,6 +2394,8 @@ class T8FireRedAudioSpeechQA(io.ComfyNode):
         max_silence_ratio: float,
         max_cue_overrun_seconds: float,
         max_new_tokens: int,
+        use_asr_cache: bool = True,
+        refresh_asr_cache: bool = False,
         **kwargs,
     ) -> str:
         return stable_digest(
@@ -2399,6 +2408,10 @@ class T8FireRedAudioSpeechQA(io.ComfyNode):
                     "max_silence_ratio": max_silence_ratio,
                     "max_cue_overrun_seconds": max_cue_overrun_seconds,
                     "max_new_tokens": max_new_tokens,
+                },
+                "asr_cache": {
+                    "enabled": bool(use_asr_cache),
+                    "refresh": bool(refresh_asr_cache),
                 },
             }
         )
@@ -2413,27 +2426,58 @@ class T8FireRedAudioSpeechQA(io.ComfyNode):
         max_silence_ratio: float,
         max_cue_overrun_seconds: float,
         max_new_tokens: int,
+        use_asr_cache: bool = True,
+        refresh_asr_cache: bool = False,
     ) -> io.NodeOutput:
         if not isinstance(audio_batch, AudioBatch):
             raise TypeError("语音 QA 必须连接批量音频")
         results: list[dict[str, Any]] = []
         failed_ids: list[str] = []
         items = audio_batch.successful_items()
+        prompt = "Transcribe speech to text."
+        definition = manifest()
+        model_identity = fingerprint(Path(model.model_root).resolve())
+        cache_root = output_root() / "fireredaudio" / "qa-cache" / "asr"
+        cache_hits = 0
+        cache_misses = 0
         for position, item in enumerate(items, 1):
             line_id = str(item.get("line_id") or position)
             try:
                 path = Path(str(item["output_path"]))
                 metrics = wav_metrics(path)
-                request = _base_request(model, "asr")
-                request.update(
-                    {
-                        "audio_path": str(path),
-                        "prompt": "Transcribe speech to text.",
-                        "max_new_tokens": max_new_tokens,
-                    }
+                descriptor = build_asr_cache_descriptor(
+                    path,
+                    model_revision=str(definition["modelRevision"]),
+                    model_fingerprint=model_identity,
+                    prompt=prompt,
+                    max_new_tokens=max_new_tokens,
                 )
-                inference = _infer(model, request)
-                transcript = str(inference.get("answer") or "")
+                cached = None
+                if use_asr_cache and not refresh_asr_cache:
+                    cached = load_cached_transcript(cache_root, descriptor)
+                if cached is not None:
+                    transcript = str(cached["transcript"])
+                    transcript_cache_path = str(cached["cache_path"])
+                    asr_cache_hit = True
+                    cache_hits += 1
+                else:
+                    request = _base_request(model, "asr")
+                    request.update(
+                        {
+                            "audio_path": str(path),
+                            "prompt": prompt,
+                            "max_new_tokens": max_new_tokens,
+                        }
+                    )
+                    inference = _infer(model, request)
+                    transcript = str(inference.get("answer") or "")
+                    transcript_cache_path = ""
+                    if use_asr_cache:
+                        transcript_cache_path = str(
+                            store_cached_transcript(cache_root, descriptor, transcript)
+                        )
+                    asr_cache_hit = False
+                    cache_misses += 1
                 metric_name, error_rate = text_error_rate(
                     str(item.get("text") or ""), transcript, str(item.get("language") or "zh")
                 )
@@ -2453,6 +2497,9 @@ class T8FireRedAudioSpeechQA(io.ComfyNode):
                     "speaker": item.get("speaker"),
                     "reference_text": item.get("text"),
                     "transcript": transcript,
+                    "asr_cache_hit": asr_cache_hit,
+                    "asr_cache_key": descriptor["cache_key"],
+                    "asr_cache_path": transcript_cache_path,
                     "metric": metric_name,
                     "text_error_rate": error_rate,
                     "cue_overrun_seconds": cue_overrun,
@@ -2474,6 +2521,19 @@ class T8FireRedAudioSpeechQA(io.ComfyNode):
             "total": len(results),
             "passed_count": len(results) - len(failed_ids),
             "failed_count": len(failed_ids),
+            "asr_cache": {
+                "enabled": bool(use_asr_cache),
+                "refresh": bool(refresh_asr_cache),
+                "hits": cache_hits,
+                "misses": cache_misses,
+                "directory": str(cache_root),
+                "identity": {
+                    "model_revision": str(definition["modelRevision"]),
+                    "model_fingerprint": model_identity,
+                    "prompt": prompt,
+                    "max_new_tokens": int(max_new_tokens),
+                },
+            },
             "thresholds": {
                 "max_text_error_rate": max_text_error_rate,
                 "max_clipping_ratio": max_clipping_ratio,
@@ -2938,6 +2998,7 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
         performance: list[dict[str, Any]] = []
         total_calls = 0
         cue_rejected: set[str] = set()
+        duplicate_rejected: set[str] = set()
         try:
             for attempt in range(1, effective_attempts + 1):
                 if not remaining:
@@ -2945,7 +3006,7 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
                 jobs: list[dict[str, Any]] = []
                 attempt_seed = int(base_config.get("seed", 42))
                 if seed_strategy == "increment":
-                    attempt_seed += (attempt - 1) * int(seed_step)
+                    attempt_seed += attempt * int(seed_step)
                 for line_id in remaining:
                     line = line_by_id[line_id]
                     profile = voice_bank.resolve(line.speaker)
@@ -2971,7 +3032,21 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
                             "release_after": False,
                         }
                     )
-                    jobs.append({"line_id": line_id, "target": target, "request": request, "seed": attempt_seed})
+                    original_path = Path(
+                        str(original_by_id[line_id].get("output_path") or "")
+                    )
+                    original_sha256 = (
+                        file_digest(original_path) if original_path.is_file() else ""
+                    )
+                    jobs.append(
+                        {
+                            "line_id": line_id,
+                            "target": target,
+                            "request": request,
+                            "seed": attempt_seed,
+                            "original_sha256": original_sha256,
+                        }
+                    )
 
                 next_remaining: list[str] = []
                 for chunk_start in range(0, len(jobs), effective_batch_size):
@@ -3014,6 +3089,16 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
                                 raise RuntimeError("Worker 未产生返修音频")
                             if actual.resolve() != job["target"]:
                                 shutil.copy2(actual, job["target"])
+                            output_sha256 = file_digest(job["target"])
+                            attempt_record["output_sha256"] = output_sha256
+                            if (
+                                job.get("original_sha256")
+                                and output_sha256 == job["original_sha256"]
+                            ):
+                                duplicate_rejected.add(line_id)
+                                raise RuntimeError(
+                                    "返修音频与原 Take 的 SHA-256 完全相同，未产生新候选"
+                                )
                             line = line_by_id[line_id]
                             if (
                                 line.start_seconds is not None
@@ -3087,6 +3172,7 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
             "enforce_cue_duration": bool(enforce_cue_duration),
             "max_cue_overrun_seconds": cue_threshold,
             "cue_rejected_line_ids": sorted(cue_rejected),
+            "duplicate_rejected_line_ids": sorted(duplicate_rejected),
             "worker_batch_calls": total_calls,
             "performance": performance,
             "source_files_overwritten": False,
@@ -4005,7 +4091,7 @@ class T8FireRedAudioAccelerationBenchmark(io.ComfyNode):
                 io.Combo.Input("language", display_name="语言", options=["zh", "en"], default="zh"),
                 io.String.Input("modes", display_name="实测模式（逗号分隔）", default="off,flash_attention,deepspeed"),
                 io.Int.Input("warmup_runs", display_name="每模式暖机次数", default=1, min=1, max=3),
-                io.Int.Input("measure_runs", display_name="每模式正式次数", default=3, min=3, max=9),
+                io.Int.Input("measure_runs", display_name="每模式正式次数", default=3, min=3, max=20),
                 io.Float.Input("minimum_improvement_percent", display_name="最低有效提速百分比", default=10.0, min=0.0, max=100.0, step=1.0),
                 io.Boolean.Input("require_reproducible_hash", display_name="推荐模式必须同 Seed 哈希一致", default=True),
                 io.String.Input("project_name", display_name="基准项目名", default="acceleration-benchmark"),

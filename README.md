@@ -173,7 +173,9 @@ SRT 的正文可用 `[角色] 台词` 标记角色。角色脚本支持 `# 场�
 
 批量配音输出到 `ComfyUI/output/<subfolder>/<project_name>/`。`manifest.json` 会在每条成功或失败后原子更新；启用恢复后，只有台词、音色参考、生成参数和模型身份指纹均一致且 WAV 仍存在的条目才会命中缓存。未命中条目按 `batch_size` 分块进入 Worker `tts-batch`；报告保存每批真实 execution model 和性能数据。若 ComfyUI 中断当前批次，已完成并写入 manifest 的条目仍可在下次运行复用。
 
-`SpeechQA.failed_line_ids` 可直接连接“QA 失败项定向返修”。返修始终写入独立目录和 `repair-manifest.json`，不会覆盖原始或已通过音频；成功条目才会替换输出 AudioBatch 中对应 line ID。默认启用字幕时间槽门禁：脚本带时间码时，每次新 Take 都会重新测量真实 WAV，仍超过允许值就继续下一 Seed，全部尝试仍不合格则保持失败状态，不会把“生成成功”误当作“返修合格”。返修后的 AudioBatch 可连接“试听选择”“批量保存/下载”或时间线；批量保存会生成相对独立的交付目录、`export-manifest.json` 和可选 ZIP，结果区默认显示最多 16 条原生播放器/下载入口。
+`SpeechQA.failed_line_ids` 可直接连接“QA 失败项定向返修”。返修始终写入独立目录和 `repair-manifest.json`，不会覆盖原始或已通过音频；成功条目才会替换输出 AudioBatch 中对应 line ID。递增 Seed 从首轮就使用基础 Seed + step；若新候选与原 Take SHA-256 完全相同会明确拒绝并继续下一 Seed。默认启用字幕时间槽门禁：脚本带时间码时，每次新 Take 都会重新测量真实 WAV，仍超过允许值就继续下一 Seed，全部尝试仍不合格则保持失败状态，不会把“生成成功”误当作“返修合格”。返修后的 AudioBatch 可连接“试听选择”“批量保存/下载”或时间线；批量保存会生成相对独立的交付目录、`export-manifest.json` 和可选 ZIP，结果区默认显示最多 16 条原生播放器/下载入口。
+
+“成品语音 QA”默认把 ASR 逐字稿缓存到 ComfyUI output 的 `fireredaudio/qa-cache/asr`。缓存身份绑定 WAV SHA-256、官方模型 revision、实际模型指纹、固定提示词和 ASR Token 上限；缓存只复用逐字稿，CER/WER、削波、静音和时间槽阈值每次都会重新计算。报告会显示逐条命中与总 hits/misses；高级选项可关闭或强制刷新。损坏、身份不一致或被篡改的 JSON 不会命中。
 
 “朗读文本规范化”不会改写输入脚本对象；输出 ScriptPlan 的 `source_text` 保留原文，`text` 是实际朗读文本，命中的规则写入 `normalization`。自定义词典使用 JSON 对象并按长词优先替换。中文数字展开默认关闭，因为型号、编号和专有名词可能需要不同读法；应先查看原文/朗读文本对照，再连接批量配音。
 
@@ -191,7 +193,7 @@ SRT 的正文可用 `[角色] 台词` 标记角色。角色脚本支持 `# 场�
 
 “多 Take 试听评审板”本身继续采用纯节点实现：候选通过 ComfyUI 官方原生音频预览协议显示，支持播放和下载；评分、备注与选中 line ID 写入新的 review manifest，每批只有一个 `adopted=true`，源 AudioBatch 和 WAV 不变。v0.14 的“逐句制作审核台”另带一个本地前端表格，但音频 URL 仍使用官方 `/view` 协议，不增加网络请求。多 Seed 试音的文件名改为不暴露 Seed 的 `take-001.wav` 等，Seed 只留在审计 Manifest，适合盲听。
 
-“加速实测向导”会自动补入 `off` 基线，每种模式先暖机，再正式运行 3–9 次；缺轮子或 ABI 不匹配导致的回退不会被误当成该模式成绩。FlashAttention 等普通候选默认至少快 10%，DeepSpeed/FLA/Torch Compile 等实验模式至少快 20%，并可要求同 Seed 多轮 SHA-256 一致后才推荐。节点结束会释放模型，只输出建议和完整证据，不会修改模型加载器。
+“加速实测向导”会自动补入 `off` 基线，每种模式先暖机，再正式运行 3–20 次；缺轮子或 ABI 不匹配导致的回退不会被误当成该模式成绩。FlashAttention 等普通候选默认至少快 10%，DeepSpeed/FLA/Torch Compile 等实验模式至少快 20%，并可要求同 Seed 多轮 SHA-256 一致后才推荐。节点结束会释放模型，只输出建议和完整证据，不会修改模型加载器。
 
 ## 真模型长跑验收
 
@@ -217,6 +219,10 @@ v0.14.0 的执行级验收覆盖原文/朗读文本双轨、自定义词典与�
 同版本在 RTX 5090 Laptop、24 GiB、`sequential + auto_safe` 上完成两句真模型完整创作链验收：2/2 批量生成、第一句以 1.08 倍安全适配、第二句以 1.25 倍需求进入重做、ASR 回读 CER 为 0、QA 正确拦截时间槽失败、只返修问题句、终审/恢复/双 WAV 与 ZIP 交付均完成；总耗时 129.828 秒，CUDA 峰值分配约 19.85 GiB，源文件 SHA-256 未变化。可用 `scripts/validate_v014_real_production.py` 在目标机器复验；真实声音审美仍需人工试听，自动指标不能代替听感。
 
 同版本随后在 RTX 5090 Laptop、24 GiB、`sequential` 上完成真模型第 25 组等价实测：三种模式均无回退且每模式 3/3 正式 WAV 同 Seed 哈希可复现；`off` 中位 24.182 秒 / RTF 6.297，FlashAttention 21.179 秒 / RTF 5.515（快 12.418%），DeepSpeed 20.659 秒 / RTF 5.380（快 14.569%），峰值显存均约 19.850 GiB。按普通候选 10%、实验模式 20% 门槛推荐 FlashAttention；DeepSpeed 虽略快但未达到实验采用门槛。此结论仍只适用于这台机器和固定短句工作流。
+
+v0.15.0 补齐制作规模与长文本证据：同一 RTX 5090 Laptop 上，100 行/8 角色以 `sequential + flash_attention + fast` 分成 13 批完成 100/100、0 失败，真实生成 807.162 秒，总音频 405.76 秒；二次 Manifest 恢复 0.136 秒、100/100 命中且全部哈希不变。另一次 `sequential + auto_safe + fast` 连续 20 轮全部有效，含冷启动的总中位数 13.645 秒，首五轮/末五轮任务后显存中位数 496/497 MiB、漂移 1 MiB，最大 CUDA 分配约 19.852 GiB。
+
+同版本使用 142 字固定中文长文本、`balanced` 参数和显式 FlashAttention 做 1 次暖机 + 连续 10 次正式测量：10/10 实际模式均为 `flash_attention`、0 回退，输出均为 25.28 秒；中位总耗时 44.799 秒、中位 RTF 1.772、峰值显存约 19.865 GiB，同 Seed 的 10 个输出哈希完全一致。该数据仍只适用于这台机器和固定工作流。
 
 仓库每周读取固定清单中的 FireRedAudio 代码与模型 revision，并与 GitHub/Hugging Face 最新 revision 比较。发现变化只创建兼容性审计提醒，不自动升级；仍需通过宿主 Python/Transformers 矩阵、ComfyUI schema 和真模型 Smoke Test 后才能更新固定版本。
 

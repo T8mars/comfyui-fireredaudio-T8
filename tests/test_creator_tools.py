@@ -261,6 +261,10 @@ class CreatorToolTests(unittest.TestCase):
         self.assertEqual(production["12"]["inputs"]["audio_batch"], ["11", 0])
         self.assertEqual(production["12"]["inputs"]["failed_line_ids"], ["11", 2])
         self.assertTrue(production["12"]["inputs"]["enforce_cue_duration"])
+        self.assertTrue(production["10"]["inputs"]["use_asr_cache"])
+        self.assertFalse(production["10"]["inputs"]["refresh_asr_cache"])
+        self.assertTrue(production["13"]["inputs"]["use_asr_cache"])
+        self.assertFalse(production["13"]["inputs"]["refresh_asr_cache"])
         self.assertEqual(
             production["12"]["inputs"]["max_cue_overrun_seconds"], 0.5
         )

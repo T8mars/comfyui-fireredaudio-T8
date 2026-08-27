@@ -140,7 +140,9 @@
       "max_clipping_ratio": 0.001,
       "max_silence_ratio": 0.8,
       "max_cue_overrun_seconds": 0.5,
-      "max_new_tokens": 512
+      "max_new_tokens": 512,
+      "use_asr_cache": true,
+      "refresh_asr_cache": false
     }
   },
   "11": {
@@ -214,7 +216,9 @@
       "max_clipping_ratio": 0.001,
       "max_silence_ratio": 0.8,
       "max_cue_overrun_seconds": 0.5,
-      "max_new_tokens": 512
+      "max_new_tokens": 512,
+      "use_asr_cache": true,
+      "refresh_asr_cache": false
     }
   },
   "14": {
