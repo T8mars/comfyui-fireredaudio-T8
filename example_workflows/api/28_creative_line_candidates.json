@@ -1,0 +1,182 @@
+{
+  "1": {
+    "class_type": "T8_FireRedAudio_ModelLoader",
+    "inputs": {
+      "model_name": "FireRedAudio",
+      "custom_model_path": "",
+      "device": "auto",
+      "memory_mode": "auto",
+      "acceleration_mode": "auto_safe",
+      "profile": "full",
+      "worker_mode": "managed",
+      "runtime_python": "",
+      "worker_url": "",
+      "worker_token": "",
+      "verify_hashes": false,
+      "release_after_run": false
+    }
+  },
+  "2": {
+    "class_type": "T8_FireRedAudio_AudioBatchResume",
+    "inputs": {
+      "manifest_path": "fireredaudio/projects/project/manifest.json",
+      "missing_policy": "mark_missing",
+      "verify_hashes": false,
+      "allow_external_manifest": false
+    }
+  },
+  "3": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "narrator_reference.wav"
+    }
+  },
+  "4": {
+    "class_type": "T8_FireRedAudio_VoiceProfile",
+    "inputs": {
+      "audio": [
+        "3",
+        0
+      ],
+      "name": "旁白",
+      "prompt_text": "这是旁白参考音频的逐字稿。",
+      "language": "zh",
+      "tags": "创意候选"
+    }
+  },
+  "5": {
+    "class_type": "T8_FireRedAudio_VoiceBank",
+    "inputs": {
+      "profiles.profile_0": [
+        "4",
+        0
+      ]
+    }
+  },
+  "6": {
+    "class_type": "T8_FireRedAudio_ScriptParser",
+    "inputs": {
+      "script": "旁白：请把这里替换为原制作脚本，并保持 line ID 一致。",
+      "source_format": "role_script",
+      "default_speaker": "旁白",
+      "strict_validation": false,
+      "voice_bank": [
+        "5",
+        0
+      ]
+    }
+  },
+  "7": {
+    "class_type": "T8_FireRedAudio_GenerationSettings",
+    "inputs": {
+      "quality_preset": "balanced",
+      "seed": 1001,
+      "max_new_audio_steps": 750,
+      "min_new_audio_steps": 6,
+      "max_new_text_tokens": 512,
+      "n_timesteps": 10,
+      "inference_cfg": 2.0
+    }
+  },
+  "8": {
+    "class_type": "T8_FireRedAudio_LineReview",
+    "inputs": {
+      "audio_batch": [
+        "2",
+        0
+      ],
+      "decisions_json": "{}",
+      "ratings_json": "{}",
+      "notes_json": "{}",
+      "review_name": "creative-target",
+      "subfolder": "fireredaudio/line-reviews",
+      "preview_limit": 40
+    }
+  },
+  "9": {
+    "class_type": "T8_FireRedAudio_CreativeCandidatePool",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "audio_batch": [
+        "8",
+        0
+      ],
+      "script_plan": [
+        "6",
+        0
+      ],
+      "voice_bank": [
+        "5",
+        0
+      ],
+      "target_line_id": [
+        "8",
+        2
+      ],
+      "candidate_count": 3,
+      "seed_start": 1001,
+      "seed_step": 97,
+      "include_original": true,
+      "run_asr_qa": false,
+      "project_name": "creative-line-candidates",
+      "subfolder": "fireredaudio/candidates",
+      "settings": [
+        "7",
+        0
+      ]
+    }
+  },
+  "10": {
+    "class_type": "T8_FireRedAudio_TakeReviewBoard",
+    "inputs": {
+      "audio_batch": [
+        "9",
+        0
+      ],
+      "selected_position": 1,
+      "selected_line_id": "",
+      "ratings_json": "{}",
+      "notes_json": "{}",
+      "review_name": "creative-blind-review",
+      "subfolder": "fireredaudio/reviews",
+      "preview_limit": 8
+    }
+  },
+  "11": {
+    "class_type": "T8_FireRedAudio_CandidateApply",
+    "inputs": {
+      "source_audio_batch": [
+        "8",
+        0
+      ],
+      "reviewed_candidates": [
+        "10",
+        1
+      ],
+      "selected_candidate_id": [
+        "10",
+        2
+      ],
+      "project_name": "creative-candidate-adoption",
+      "subfolder": "fireredaudio/candidate-adoptions"
+    }
+  },
+  "12": {
+    "class_type": "T8_FireRedAudio_SaveAudioBatch",
+    "inputs": {
+      "audio_batch": [
+        "11",
+        0
+      ],
+      "audio_format": "wav",
+      "project_name": "creative-adopted",
+      "subfolder": "fireredaudio/exports",
+      "create_zip": true,
+      "continue_on_error": true,
+      "preview_limit": 40
+    }
+  }
+}

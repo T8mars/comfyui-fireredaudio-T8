@@ -38,17 +38,17 @@
       },
       "widgets_values": [
         "FireRedAudio",
-        "",
         "auto",
         "auto",
         "auto_safe",
         "full",
         "managed",
-        "",
-        "",
-        "",
         false,
-        false
+        false,
+        "",
+        "",
+        "",
+        ""
       ]
     },
     {
@@ -116,6 +116,7 @@
       "widgets_values": [
         "balanced",
         42,
+        "fixed",
         750,
         6,
         512,

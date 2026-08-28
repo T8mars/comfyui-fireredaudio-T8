@@ -39,17 +39,17 @@
       },
       "widgets_values": [
         "FireRedAudio",
-        "",
         "auto",
         "auto",
         "auto_safe",
         "full",
         "managed",
-        "",
-        "",
-        "",
         false,
-        false
+        false,
+        "",
+        "",
+        "",
+        ""
       ]
     },
     {

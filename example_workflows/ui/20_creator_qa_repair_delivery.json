@@ -40,17 +40,17 @@
       },
       "widgets_values": [
         "FireRedAudio",
-        "",
         "auto",
         "auto",
         "auto_safe",
         "full",
         "managed",
-        "",
-        "",
-        "",
         false,
-        false
+        false,
+        "",
+        "",
+        "",
+        ""
       ]
     },
     {
@@ -314,8 +314,8 @@
       "widgets_values": [
         "旁白：欢迎进入批量创作闭环。\n小夏：未通过质检的台词会单独返修。\n旁白：通过的文件不会重新生成。",
         "role_script",
-        "旁白",
-        true
+        true,
+        "旁白"
       ]
     },
     {
@@ -350,6 +350,7 @@
       "widgets_values": [
         "balanced",
         42,
+        "fixed",
         750,
         6,
         512,

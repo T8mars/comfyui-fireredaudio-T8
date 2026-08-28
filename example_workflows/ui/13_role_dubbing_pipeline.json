@@ -39,17 +39,17 @@
       },
       "widgets_values": [
         "FireRedAudio",
-        "",
         "auto",
         "auto",
         "auto_safe",
         "full",
         "managed",
-        "",
-        "",
-        "",
         false,
-        false
+        false,
+        "",
+        "",
+        "",
+        ""
       ]
     },
     {
@@ -311,8 +311,8 @@
       "widgets_values": [
         "旁白：欢迎收听本期节目。\n[00:00:03,000 --> 00:00:06,000] 小夏：大家好，我是小夏。",
         "role_script",
-        "旁白",
-        false
+        false,
+        "旁白"
       ]
     },
     {
@@ -346,6 +346,7 @@
       "widgets_values": [
         "balanced",
         42,
+        "fixed",
         750,
         6,
         512,

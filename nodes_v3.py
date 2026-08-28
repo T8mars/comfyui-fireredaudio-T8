@@ -111,7 +111,7 @@ AudioBatchType = io.Custom("T8_FIREREDAUDIO_AUDIO_BATCH")
 SpeechQAType = io.Custom("T8_FIREREDAUDIO_SPEECH_QA")
 DeliveryPresetType = io.Custom("T8_FIREREDAUDIO_DELIVERY_PRESET")
 LocalRepairPlanType = io.Custom("T8_FIREREDAUDIO_LOCAL_REPAIR_PLAN")
-NODE_VERSION = "0.15.0"
+NODE_VERSION = "0.16.0"
 
 LONG_LOCATE_PROMPTS = {
     "timeline_summary": (
@@ -2554,16 +2554,16 @@ class T8FireRedAudioDurationFit(io.ComfyNode):
             category=CATEGORY,
             essentials_category="Audio",
             description=(
-                "按 SRT 时间槽报告超时；可在安全倍率内用 FFmpeg atempo 保持音高地适配，"
-                "超过上限的条目进入重做清单。始终保留源文件。"
+                "按 SRT 时间槽报告超时；语音感知模式先裁掉首尾多余静音，再只对剩余超时"
+                "做安全范围内的 FFmpeg atempo。超过上限的条目进入重做清单，始终保留源文件。"
             ),
             inputs=[
                 AudioBatchType.Input("audio_batch", display_name="批量音频"),
                 io.Combo.Input(
                     "strategy",
                     display_name="处理策略",
-                    options=["safe_stretch", "report_only"],
-                    default="safe_stretch",
+                    options=["speech_aware", "safe_stretch", "report_only"],
+                    default="speech_aware",
                 ),
                 io.Float.Input(
                     "tolerance_seconds",
@@ -2593,6 +2593,33 @@ class T8FireRedAudioDurationFit(io.ComfyNode):
                 ),
                 io.String.Input("project_name", display_name="适配项目名", default="subtitle-fit"),
                 io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/duration-fit"),
+                io.Float.Input(
+                    "edge_silence_threshold_db",
+                    display_name="首尾静音阈值（dB）",
+                    default=-40.0,
+                    min=-80.0,
+                    max=-20.0,
+                    step=1.0,
+                    advanced=True,
+                ),
+                io.Float.Input(
+                    "edge_silence_min_seconds",
+                    display_name="静音最短时长（秒）",
+                    default=0.05,
+                    min=0.01,
+                    max=2.0,
+                    step=0.01,
+                    advanced=True,
+                ),
+                io.Float.Input(
+                    "edge_padding_seconds",
+                    display_name="保留首尾缓冲（秒）",
+                    default=0.12,
+                    min=0.0,
+                    max=2.0,
+                    step=0.01,
+                    advanced=True,
+                ),
             ],
             outputs=[
                 AudioBatchType.Output("audio_batch", display_name="适配后 AudioBatch"),
@@ -2613,6 +2640,9 @@ class T8FireRedAudioDurationFit(io.ComfyNode):
         minimum_speed: float,
         project_name: str,
         subfolder: str,
+        edge_silence_threshold_db: float = -40.0,
+        edge_silence_min_seconds: float = 0.05,
+        edge_padding_seconds: float = 0.12,
         **kwargs,
     ) -> str:
         return stable_digest(
@@ -2625,6 +2655,9 @@ class T8FireRedAudioDurationFit(io.ComfyNode):
                 "minimum_speed": float(minimum_speed),
                 "project_name": project_name,
                 "subfolder": subfolder,
+                "edge_silence_threshold_db": float(edge_silence_threshold_db),
+                "edge_silence_min_seconds": float(edge_silence_min_seconds),
+                "edge_padding_seconds": float(edge_padding_seconds),
             }
         )
 
@@ -2639,6 +2672,9 @@ class T8FireRedAudioDurationFit(io.ComfyNode):
         minimum_speed: float,
         project_name: str,
         subfolder: str,
+        edge_silence_threshold_db: float = -40.0,
+        edge_silence_min_seconds: float = 0.05,
+        edge_padding_seconds: float = 0.12,
     ) -> io.NodeOutput:
         project = _safe_name(project_name, "subtitle-fit")
         stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
@@ -2652,6 +2688,9 @@ class T8FireRedAudioDurationFit(io.ComfyNode):
             maximum_speed=maximum_speed,
             minimum_speed=minimum_speed,
             fit_underrun=fit_underrun,
+            edge_silence_threshold_db=edge_silence_threshold_db,
+            edge_silence_min_seconds=edge_silence_min_seconds,
+            edge_padding_seconds=edge_padding_seconds,
         )
         manifest_path = output_dir / "duration-fit-manifest.json"
         payload = {
@@ -3178,6 +3217,373 @@ class T8FireRedAudioBatchRetry(io.ComfyNode):
             "source_files_overwritten": False,
         }
         return io.NodeOutput(merged_batch, str(manifest_path), _json(report))
+
+
+class T8FireRedAudioCreativeCandidatePool(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_CreativeCandidatePool",
+            display_name="FireRedAudio 单句创意候选池 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "为一条指定台词生成 2–7 个不同 Seed 的创意候选，并可把原 Take 一起匿名复制到候选池。"
+                "它不自动覆盖成品；请连接多 Take 试听评审板，再用候选采用节点明确回填。"
+            ),
+            inputs=[
+                ModelType.Input("model"),
+                AudioBatchType.Input("audio_batch", display_name="原批量音频"),
+                ScriptPlanType.Input("script_plan", display_name="原脚本计划"),
+                VoiceBankType.Input("voice_bank", display_name="原音色库"),
+                io.String.Input(
+                    "target_line_id",
+                    display_name="要探索的单个 line ID",
+                    multiline=True,
+                    force_input=True,
+                ),
+                io.Int.Input("candidate_count", display_name="新候选数量", default=3, min=2, max=7),
+                io.Int.Input("seed_start", display_name="起始 Seed", default=1001, min=0, max=0xFFFFFFFF - 700000),
+                io.Int.Input("seed_step", display_name="候选 Seed 间隔", default=97, min=1, max=100000),
+                io.Boolean.Input("include_original", display_name="把原 Take 匿名加入盲听", default=True),
+                io.Boolean.Input("run_asr_qa", display_name="逐个 ASR 回读（较慢）", default=False),
+                io.String.Input("project_name", display_name="候选池项目名", default="creative-line-candidates"),
+                io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/candidates"),
+                SettingsType.Input("settings", display_name="生成参数", optional=True),
+            ],
+            outputs=[
+                AudioBatchType.Output("candidate_batch", display_name="匿名候选 AudioBatch"),
+                io.String.Output("source_line_id", display_name="原 line ID"),
+                io.String.Output("manifest_path", display_name="候选 Manifest 路径"),
+                io.String.Output("candidate_report", display_name="Seed 与候选证据"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        model: RuntimeHandle,
+        audio_batch: AudioBatch,
+        script_plan: ScriptPlan,
+        voice_bank: VoiceBank,
+        target_line_id: str,
+        candidate_count: int,
+        seed_start: int,
+        seed_step: int,
+        include_original: bool,
+        run_asr_qa: bool,
+        project_name: str,
+        subfolder: str,
+        settings: GenerationSettings | None = None,
+        **kwargs,
+    ) -> str:
+        return stable_digest(
+            {
+                "model": model.to_dict(),
+                "audio_batch": _audio_batch_state(audio_batch),
+                "script_plan": script_plan.to_dict() if isinstance(script_plan, ScriptPlan) else None,
+                "voice_bank": voice_bank.to_dict() if isinstance(voice_bank, VoiceBank) else None,
+                "target_line_id": parse_line_ids(target_line_id),
+                "candidate_count": int(candidate_count),
+                "seed_start": int(seed_start),
+                "seed_step": int(seed_step),
+                "include_original": bool(include_original),
+                "run_asr_qa": bool(run_asr_qa),
+                "project_name": project_name,
+                "subfolder": subfolder,
+                "settings": _settings(settings).to_dict(),
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model: RuntimeHandle,
+        audio_batch: AudioBatch,
+        script_plan: ScriptPlan,
+        voice_bank: VoiceBank,
+        target_line_id: str,
+        candidate_count: int,
+        seed_start: int,
+        seed_step: int,
+        include_original: bool,
+        run_asr_qa: bool,
+        project_name: str,
+        subfolder: str,
+        settings: GenerationSettings | None = None,
+    ) -> io.NodeOutput:
+        if not isinstance(audio_batch, AudioBatch):
+            raise TypeError("创意候选池必须连接原 AudioBatch")
+        if not isinstance(script_plan, ScriptPlan) or not isinstance(voice_bank, VoiceBank):
+            raise TypeError("创意候选池必须连接原脚本计划和音色库")
+        requested = parse_line_ids(target_line_id)
+        if len(requested) != 1:
+            raise ValueError("创意候选池一次只处理一个 line ID；多条失败项请逐句试听决定")
+        source_line_id = requested[0]
+        source_items = {
+            str(item.get("line_id") or ""): dict(item) for item in audio_batch.items
+        }
+        lines = {line.line_id: line for line in script_plan.lines}
+        if source_line_id not in source_items or source_line_id not in lines:
+            raise ValueError(f"line ID 不属于当前脚本/AudioBatch：{source_line_id}")
+        line = lines[source_line_id]
+        profile = voice_bank.resolve(line.speaker)
+        if profile is None:
+            raise ValueError(f"角色没有音色档案：{line.speaker}")
+
+        project = _safe_name(project_name, "creative-line-candidates")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/candidates"
+        project_dir = _safe_output_dir(f"{clean_subfolder}/{project}-{uuid.uuid4().hex[:8]}")
+        config = _settings(settings)
+        effective_count = max(2, min(7, int(candidate_count)))
+        effective_step = max(1, int(seed_step))
+        requests: list[dict[str, Any]] = []
+        request_seeds: list[int] = []
+        for offset in range(effective_count):
+            seed = int(seed_start) + offset * effective_step
+            request_seeds.append(seed)
+            request = _base_request(model, "tts", config)
+            request.update(
+                {
+                    "task_id": f"creative-{project}-{source_line_id}-{offset + 1:03d}",
+                    "seed": seed,
+                    "prompt_audio": profile.prompt_audio,
+                    "prompt_text": profile.prompt_text,
+                    "target_text": line.text,
+                    "language": line.language,
+                    "output_path": str(project_dir / f"take-{offset + 1:03d}.wav"),
+                    "release_after": False,
+                }
+            )
+            requests.append(request)
+
+        batch_result = _infer_tts_batch(model, requests)
+        items: list[dict[str, Any]] = []
+        original = source_items[source_line_id]
+        if include_original:
+            original_path = Path(str(original.get("output_path") or ""))
+            if original.get("status") == "complete" and original_path.is_file():
+                blind_original = project_dir / "take-000.wav"
+                shutil.copy2(original_path, blind_original)
+                items.append(
+                    {
+                        "line_id": "candidate-000",
+                        "index": 0,
+                        "source_line_id": source_line_id,
+                        "speaker": line.speaker,
+                        "text": line.text,
+                        "language": line.language,
+                        "status": "complete",
+                        "output_path": str(blind_original),
+                        "candidate_origin": "original_take",
+                        "seed": original.get("seed"),
+                        "output_sha256": file_digest(blind_original),
+                        "metrics": wav_metrics(blind_original),
+                    }
+                )
+
+        for outcome in batch_result.get("outcomes", []):
+            index = int(outcome.get("index", 0))
+            candidate_id = f"candidate-{index + 1:03d}"
+            if not outcome.get("ok"):
+                items.append(
+                    {
+                        "line_id": candidate_id,
+                        "index": index + 1,
+                        "source_line_id": source_line_id,
+                        "status": "failed",
+                        "requested_seed": requests[index]["seed"],
+                        "error": outcome.get("error"),
+                    }
+                )
+                continue
+            worker_report = dict(outcome.get("result") or {})
+            path = Path(str(worker_report.get("output_path") or requests[index]["output_path"]))
+            if not path.is_file():
+                raise RuntimeError(f"Worker 未产生创意候选：{candidate_id}")
+            metrics = wav_metrics(path)
+            item: dict[str, Any] = {
+                "line_id": candidate_id,
+                "index": index + 1,
+                "source_line_id": source_line_id,
+                "speaker": line.speaker,
+                "text": line.text,
+                "language": line.language,
+                "status": "complete",
+                "output_path": str(path),
+                "candidate_origin": "creative_seed",
+                "seed": requests[index]["seed"],
+                "requested_seed": requests[index]["seed"],
+                "output_sha256": file_digest(path),
+                "metrics": metrics,
+                "worker_report": worker_report,
+            }
+            if run_asr_qa:
+                qa_request = _base_request(model, "asr")
+                qa_request.update(
+                    {
+                        "audio_path": str(path),
+                        "prompt": "Transcribe speech to text.",
+                        "max_new_tokens": 1024,
+                        "release_after": False,
+                    }
+                )
+                qa_result = _infer(model, qa_request)
+                hypothesis = str(qa_result.get("answer") or "").strip()
+                metric_name, error_rate = text_error_rate(line.text, hypothesis, line.language)
+                item["asr_qa"] = {
+                    "hypothesis": hypothesis,
+                    "metric": metric_name,
+                    "error_rate": error_rate,
+                }
+            items.append(item)
+
+        playable = [item for item in items if item.get("status") == "complete"]
+        if not playable:
+            raise RuntimeError("单句创意候选池没有生成任何可试听候选")
+        by_hash: dict[str, list[str]] = {}
+        for item in playable:
+            by_hash.setdefault(str(item.get("output_sha256") or ""), []).append(str(item["line_id"]))
+        duplicate_groups = [group for digest, group in by_hash.items() if digest and len(group) > 1]
+        manifest_path = project_dir / "candidate-manifest.json"
+        report = {
+            "manifest_version": MANIFEST_VERSION,
+            "kind": "creative_line_candidate_pool",
+            "node_version": NODE_VERSION,
+            "source_manifest_path": audio_batch.manifest_path,
+            "source_line_id": source_line_id,
+            "requested_seeds": request_seeds,
+            "seed_step": effective_step,
+            "include_original": bool(include_original),
+            "generated_count": len([item for item in playable if item.get("candidate_origin") == "creative_seed"]),
+            "playable_count": len(playable),
+            "distinct_audio_hashes": len(by_hash),
+            "duplicate_candidate_groups": duplicate_groups,
+            "blind_filenames": True,
+            "automatic_adoption": False,
+            "performance": batch_result.get("performance"),
+            "items": items,
+        }
+        write_manifest(manifest_path, report)
+        return io.NodeOutput(
+            AudioBatch(str(manifest_path), tuple(items)),
+            source_line_id,
+            str(manifest_path),
+            _json(report),
+        )
+
+
+class T8FireRedAudioCandidateApply(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="T8_FireRedAudio_CandidateApply",
+            display_name="FireRedAudio 采用创意候选 · T8star-Aix",
+            category=CATEGORY,
+            essentials_category="Audio",
+            description=(
+                "把多 Take 试听评审板明确选中的一条创意候选非破坏地回填到原 AudioBatch，"
+                "记录旧文件、Seed、人工评分和候选 Manifest，未选台词保持不变。"
+            ),
+            inputs=[
+                AudioBatchType.Input("source_audio_batch", display_name="原批量音频"),
+                AudioBatchType.Input("reviewed_candidates", display_name="已评审候选"),
+                io.String.Input("selected_candidate_id", display_name="已采用候选 ID", force_input=True),
+                io.String.Input("project_name", display_name="采用记录名", default="creative-candidate-adoption"),
+                io.String.Input("subfolder", display_name="采用记录目录", default="fireredaudio/candidate-adoptions"),
+            ],
+            outputs=[
+                AudioBatchType.Output("audio_batch", display_name="回填后 AudioBatch"),
+                io.Audio.Output("selected_audio", display_name="已采用音频"),
+                io.String.Output("manifest_path", display_name="采用 Manifest 路径"),
+                io.String.Output("adoption_report", display_name="采用报告"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        source_audio_batch: AudioBatch,
+        reviewed_candidates: AudioBatch,
+        selected_candidate_id: str,
+        project_name: str,
+        subfolder: str,
+        **kwargs,
+    ) -> str:
+        return stable_digest(
+            {
+                "source_audio_batch": _audio_batch_state(source_audio_batch),
+                "reviewed_candidates": _audio_batch_state(reviewed_candidates),
+                "selected_candidate_id": selected_candidate_id,
+                "project_name": project_name,
+                "subfolder": subfolder,
+            }
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        source_audio_batch: AudioBatch,
+        reviewed_candidates: AudioBatch,
+        selected_candidate_id: str,
+        project_name: str,
+        subfolder: str,
+    ) -> io.NodeOutput:
+        if not isinstance(source_audio_batch, AudioBatch) or not isinstance(reviewed_candidates, AudioBatch):
+            raise TypeError("候选采用必须连接原 AudioBatch 和已评审候选")
+        selected_id = str(selected_candidate_id or "").strip()
+        if not selected_id:
+            raise ValueError("请从多 Take 试听评审板连接已采用候选 ID")
+        selected = next(
+            (dict(item) for item in reviewed_candidates.items if str(item.get("line_id") or "") == selected_id),
+            None,
+        )
+        if selected is None or selected.get("status") != "complete":
+            raise ValueError(f"候选不存在或不可播放：{selected_id}")
+        selected_path = Path(str(selected.get("output_path") or ""))
+        if not selected_path.is_file():
+            raise ValueError(f"候选音频文件不存在：{selected_path}")
+        source_line_id = str(selected.get("source_line_id") or "").strip()
+        originals = {str(item.get("line_id") or ""): dict(item) for item in source_audio_batch.items}
+        if not source_line_id or source_line_id not in originals:
+            raise ValueError("候选没有可回填的 source_line_id，或它不属于原 AudioBatch")
+        original = originals[source_line_id]
+        replacement = dict(original)
+        replacement.update(
+            {
+                "status": "complete",
+                "output_path": str(selected_path),
+                "creative_candidate_adopted": True,
+                "candidate_line_id": selected_id,
+                "candidate_seed": selected.get("seed"),
+                "candidate_origin": selected.get("candidate_origin"),
+                "candidate_manifest_path": reviewed_candidates.manifest_path,
+                "previous_output_path": str(original.get("output_path") or ""),
+                "human_review": dict(selected.get("human_review") or {}),
+            }
+        )
+        project = _safe_name(project_name, "creative-candidate-adoption")
+        stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+        clean_subfolder = subfolder.rstrip("/\\") or "fireredaudio/candidate-adoptions"
+        output_dir = _safe_output_dir(f"{clean_subfolder}/{project}-{stamp}")
+        manifest_path = output_dir / "adoption-manifest.json"
+        merged = merge_audio_batch_items(source_audio_batch, [replacement], manifest_path)
+        report = {
+            "manifest_version": MANIFEST_VERSION,
+            "kind": "creative_candidate_adoption",
+            "node_version": NODE_VERSION,
+            "source_manifest_path": source_audio_batch.manifest_path,
+            "candidate_manifest_path": reviewed_candidates.manifest_path,
+            "source_line_id": source_line_id,
+            "selected_candidate_id": selected_id,
+            "selected_seed": selected.get("seed"),
+            "previous_output_path": str(original.get("output_path") or ""),
+            "selected_output_path": str(selected_path),
+            "source_files_overwritten": False,
+            "items": list(merged.items),
+        }
+        write_manifest(manifest_path, report)
+        return io.NodeOutput(merged, wav_to_audio(selected_path), str(manifest_path), _json(report))
 
 
 class T8FireRedAudioAudioBatchSelect(io.ComfyNode):
@@ -4456,6 +4862,8 @@ class T8FireRedAudioExtension(ComfyExtension):
             T8FireRedAudioDurationFit,
             T8FireRedAudioLineReview,
             T8FireRedAudioBatchRetry,
+            T8FireRedAudioCreativeCandidatePool,
+            T8FireRedAudioCandidateApply,
             T8FireRedAudioAudioBatchSelect,
             T8FireRedAudioTakeReviewBoard,
             T8FireRedAudioSaveAudioBatch,

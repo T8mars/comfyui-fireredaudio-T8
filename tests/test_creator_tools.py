@@ -25,6 +25,26 @@ def write_tone(path: Path, *, seconds: float, sample_rate: int = 24000) -> None:
         writer.writeframes(frames)
 
 
+def write_tone_with_edge_silence(
+    path: Path,
+    *,
+    leading_seconds: float,
+    tone_seconds: float,
+    trailing_seconds: float,
+    sample_rate: int = 24000,
+) -> None:
+    frames = bytearray(round(leading_seconds * sample_rate) * 2)
+    for index in range(round(tone_seconds * sample_rate)):
+        value = round(math.sin(2 * math.pi * 440.0 * index / sample_rate) * 7000)
+        frames.extend(int(value).to_bytes(2, "little", signed=True))
+    frames.extend(bytearray(round(trailing_seconds * sample_rate) * 2))
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(frames)
+
+
 class CreatorToolTests(unittest.TestCase):
     def test_normalization_preserves_source_and_exposes_spoken_text(self) -> None:
         plan = PRODUCTION.ScriptPlan(
@@ -229,6 +249,53 @@ class CreatorToolTests(unittest.TestCase):
             self.assertEqual(PRODUCTION.file_digest(safe), safe_hash)
             self.assertEqual(PRODUCTION.file_digest(unsafe), unsafe_hash)
             self.assertFalse(report["source_files_overwritten"])
+
+    def test_speech_aware_duration_fit_trims_edge_silence_before_tempo(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "speech-with-padding.wav"
+            write_tone_with_edge_silence(
+                source,
+                leading_seconds=0.80,
+                tone_seconds=4.00,
+                trailing_seconds=0.35,
+            )
+            source_hash = PRODUCTION.file_digest(source)
+            batch = PRODUCTION.AudioBatch(
+                "source.json",
+                (
+                    {
+                        "line_id": "speech-aware",
+                        "index": 1,
+                        "speaker": "旁白",
+                        "status": "complete",
+                        "output_path": str(source),
+                        "start_seconds": 0.0,
+                        "end_seconds": 4.75,
+                    },
+                ),
+            )
+            fitted, report = TOOLS.fit_audio_batch_to_cues(
+                batch,
+                root / "fit",
+                strategy="speech_aware",
+                maximum_speed=1.15,
+                tolerance_seconds=0.05,
+                edge_padding_seconds=0.12,
+            )
+            row = report["items"][0]
+            fitted_path = Path(fitted.items[0]["output_path"])
+            self.assertEqual(row["action"], "silence_trimmed")
+            self.assertGreater(row["trim_leading_seconds"], 0.35)
+            self.assertAlmostEqual(row["tempo"], 1.0, delta=0.0001)
+            self.assertAlmostEqual(
+                PRODUCTION.wav_metrics(fitted_path)["duration_seconds"],
+                4.75,
+                delta=0.03,
+            )
+            self.assertEqual(PRODUCTION.file_digest(source), source_hash)
+            self.assertEqual(report["adapted_line_ids"], ["speech-aware"])
+            self.assertEqual(report["retry_line_ids"], [])
 
     def test_frontend_review_widget_is_packaged_and_binds_serialized_inputs(
         self,

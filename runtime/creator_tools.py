@@ -347,20 +347,29 @@ def fit_audio_batch_to_cues(
     audio_batch: AudioBatch,
     output_dir: str | Path,
     *,
-    strategy: str = "safe_stretch",
+    strategy: str = "speech_aware",
     tolerance_seconds: float = 0.10,
     maximum_speed: float = 1.15,
     minimum_speed: float = 0.90,
     fit_underrun: bool = False,
+    edge_silence_threshold_db: float = -40.0,
+    edge_silence_min_seconds: float = 0.05,
+    edge_padding_seconds: float = 0.12,
 ) -> tuple[AudioBatch, dict[str, Any]]:
     if not isinstance(audio_batch, AudioBatch):
         raise TypeError("字幕时长适配必须连接 AudioBatch")
-    if strategy not in {"report_only", "safe_stretch"}:
-        raise ValueError("strategy 必须是 report_only 或 safe_stretch")
+    if strategy not in {"report_only", "safe_stretch", "speech_aware"}:
+        raise ValueError("strategy 必须是 report_only、safe_stretch 或 speech_aware")
     if not 1.0 <= float(maximum_speed) <= 2.0:
         raise ValueError("最大加速倍率必须在 1.0–2.0")
     if not 0.5 <= float(minimum_speed) <= 1.0:
         raise ValueError("最小减速倍率必须在 0.5–1.0")
+    if not -80.0 <= float(edge_silence_threshold_db) <= -20.0:
+        raise ValueError("首尾静音阈值必须在 -80–-20 dB")
+    if not 0.01 <= float(edge_silence_min_seconds) <= 2.0:
+        raise ValueError("首尾静音最短时长必须在 0.01–2.0 秒")
+    if not 0.0 <= float(edge_padding_seconds) <= 2.0:
+        raise ValueError("保留首尾缓冲必须在 0–2.0 秒")
     target_root = Path(output_dir).resolve()
     target_root.mkdir(parents=True, exist_ok=True)
     fitted: list[dict[str, Any]] = []
@@ -408,6 +417,94 @@ def fit_audio_batch_to_cues(
                 )
                 if should_speed:
                     retry_ids.append(line_id)
+            elif should_speed and strategy == "speech_aware":
+                silence = _boundary_silence_seconds(
+                    source_path,
+                    duration_seconds=duration,
+                    threshold_db=float(edge_silence_threshold_db),
+                    minimum_seconds=float(edge_silence_min_seconds),
+                )
+                padding = float(edge_padding_seconds)
+                available_leading = max(0.0, float(silence["leading_seconds"]) - padding)
+                available_trailing = max(0.0, float(silence["trailing_seconds"]) - padding)
+                trim_needed = max(0.0, duration - slot)
+                trim_leading = min(available_leading, trim_needed)
+                trim_trailing = min(
+                    available_trailing,
+                    max(0.0, trim_needed - trim_leading),
+                )
+                trimmed_duration = max(0.0, duration - trim_leading - trim_trailing)
+                residual_overrun = max(0.0, trimmed_duration - slot)
+                residual_tempo = trimmed_duration / slot
+                row.update(
+                    boundary_silence=silence,
+                    edge_padding_seconds=padding,
+                    available_edge_trim_seconds=available_leading + available_trailing,
+                    trim_leading_seconds=trim_leading,
+                    trim_trailing_seconds=trim_trailing,
+                    trim_total_seconds=trim_leading + trim_trailing,
+                    estimated_post_trim_seconds=trimmed_duration,
+                    residual_overrun_seconds=residual_overrun,
+                    residual_tempo=residual_tempo,
+                )
+                if residual_overrun > float(tolerance_seconds) and residual_tempo > float(maximum_speed):
+                    row.update(
+                        action="regenerate",
+                        reason="裁掉首尾多余静音后，所需加速仍超过安全上限",
+                    )
+                    retry_ids.append(line_id)
+                else:
+                    target = target_root / (
+                        _safe_name(
+                            f"{int(item.get('index') or position):04d}-{item.get('speaker') or 'take'}-{line_id}-fit",
+                            f"line-{position:04d}-fit",
+                        )
+                        + ".wav"
+                    )
+                    effective_tempo = (
+                        residual_tempo
+                        if residual_overrun > float(tolerance_seconds)
+                        else 1.0
+                    )
+                    _trim_and_time_stretch_wav(
+                        source_path,
+                        target,
+                        trim_start_seconds=trim_leading,
+                        trim_end_seconds=trim_trailing,
+                        source_duration_seconds=duration,
+                        tempo=effective_tempo,
+                    )
+                    output_metrics = wav_metrics(target)
+                    output_duration = float(output_metrics["duration_seconds"])
+                    action = (
+                        "silence_trimmed_and_time_stretched"
+                        if abs(effective_tempo - 1.0) > 1e-6
+                        else "silence_trimmed"
+                    )
+                    item["duration_fit"] = {
+                        "source_output_path": str(source_path.resolve()),
+                        "source_sha256": file_digest(source_path),
+                        "method": "speech_aware",
+                        "raw_required_tempo": required_rate,
+                        "tempo": effective_tempo,
+                        "trim_leading_seconds": trim_leading,
+                        "trim_trailing_seconds": trim_trailing,
+                        "slot_seconds": slot,
+                        "source_duration_seconds": duration,
+                        "output_duration_seconds": output_duration,
+                        "boundary_silence": silence,
+                        "non_destructive": True,
+                    }
+                    item["output_path"] = str(target)
+                    item["adapted"] = True
+                    adapted_ids.append(line_id)
+                    row.update(
+                        action=action,
+                        output_path=str(target),
+                        output_duration_seconds=output_duration,
+                        output_delta_seconds=output_duration - slot,
+                        tempo=effective_tempo,
+                    )
             elif should_speed and required_rate > float(maximum_speed):
                 row.update(action="regenerate", reason="所需加速超过安全上限")
                 retry_ids.append(line_id)
@@ -453,6 +550,9 @@ def fit_audio_batch_to_cues(
         "maximum_speed": float(maximum_speed),
         "minimum_speed": float(minimum_speed),
         "fit_underrun": bool(fit_underrun),
+        "edge_silence_threshold_db": float(edge_silence_threshold_db),
+        "edge_silence_min_seconds": float(edge_silence_min_seconds),
+        "edge_padding_seconds": float(edge_padding_seconds),
         "total": len(fitted),
         "adapted_count": len(adapted_ids),
         "retry_count": len(retry_ids),
@@ -574,6 +674,113 @@ def _time_stretch_wav(source: Path, target: Path, tempo: float) -> None:
         temporary.unlink(missing_ok=True)
         detail = (completed.stderr or completed.stdout or "FFmpeg 未产生输出").strip()
         raise RuntimeError(f"字幕时长适配失败：{detail[-1000:]}")
+    temporary.replace(target)
+
+
+def _boundary_silence_seconds(
+    source: Path,
+    *,
+    duration_seconds: float,
+    threshold_db: float,
+    minimum_seconds: float,
+) -> dict[str, Any]:
+    command = [
+        _ffmpeg_path(),
+        "-hide_banner",
+        "-nostats",
+        "-i",
+        str(source),
+        "-af",
+        f"silencedetect=noise={float(threshold_db):.3f}dB:d={float(minimum_seconds):.6f}",
+        "-f",
+        "null",
+        "-",
+    ]
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        creationflags=creationflags,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "FFmpeg 静音检测失败").strip()
+        raise RuntimeError(f"首尾静音检测失败：{detail[-1000:]}")
+    events = re.finditer(
+        r"silence_start:\s*([0-9]+(?:\.[0-9]+)?)|silence_end:\s*([0-9]+(?:\.[0-9]+)?)",
+        completed.stderr or "",
+    )
+    intervals: list[tuple[float, float]] = []
+    current_start: float | None = None
+    for event in events:
+        if event.group(1) is not None:
+            current_start = float(event.group(1))
+        elif event.group(2) is not None and current_start is not None:
+            intervals.append((current_start, float(event.group(2))))
+            current_start = None
+    duration = max(0.0, float(duration_seconds))
+    leading = 0.0
+    trailing = 0.0
+    if intervals and intervals[0][0] <= 0.01:
+        leading = min(duration, max(0.0, intervals[0][1]))
+    if intervals and intervals[-1][1] >= duration - 0.02:
+        trailing = max(0.0, duration - max(0.0, intervals[-1][0]))
+    return {
+        "threshold_db": float(threshold_db),
+        "minimum_seconds": float(minimum_seconds),
+        "leading_seconds": leading,
+        "trailing_seconds": trailing,
+        "interval_count": len(intervals),
+    }
+
+
+def _trim_and_time_stretch_wav(
+    source: Path,
+    target: Path,
+    *,
+    trim_start_seconds: float,
+    trim_end_seconds: float,
+    source_duration_seconds: float,
+    tempo: float,
+) -> None:
+    if not 0.5 <= float(tempo) <= 2.0:
+        raise ValueError("FFmpeg atempo 仅接受 0.5–2.0，本节点的安全范围必须落在其中")
+    trim_start = max(0.0, float(trim_start_seconds))
+    trim_stop = max(trim_start + 0.001, float(source_duration_seconds) - max(0.0, float(trim_end_seconds)))
+    filters = [f"atrim=start={trim_start:.10f}:end={trim_stop:.10f}", "asetpts=PTS-STARTPTS"]
+    if abs(float(tempo) - 1.0) > 1e-6:
+        filters.append(f"atempo={float(tempo):.10f}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.stem + ".tmp.wav")
+    command = [
+        _ffmpeg_path(),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source),
+        "-filter:a",
+        ",".join(filters),
+        "-c:a",
+        "pcm_s16le",
+        str(temporary),
+    ]
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        creationflags=creationflags,
+        check=False,
+    )
+    if completed.returncode != 0 or not temporary.is_file():
+        temporary.unlink(missing_ok=True)
+        detail = (completed.stderr or completed.stdout or "FFmpeg 未产生输出").strip()
+        raise RuntimeError(f"语音感知时长适配失败：{detail[-1000:]}")
     temporary.replace(target)
 
 

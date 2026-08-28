@@ -1,0 +1,612 @@
+{
+  "revision": 0,
+  "last_node_id": 1,
+  "last_link_id": 0,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "2e540112-092a-512f-ab08-924d6b997143",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        360,
+        194
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "T8_FIREREDAUDIO_MODEL",
+          "link": null,
+          "label": "model",
+          "localized_name": "model"
+        },
+        {
+          "name": "prompt_audio",
+          "type": "AUDIO",
+          "link": null,
+          "label": "prompt_audio",
+          "localized_name": "prompt_audio"
+        },
+        {
+          "name": "settings",
+          "type": "T8_FIREREDAUDIO_SETTINGS",
+          "link": null,
+          "label": "settings",
+          "localized_name": "settings"
+        },
+        {
+          "name": "language",
+          "type": "COMBO",
+          "widget": {
+            "name": "language"
+          },
+          "link": null,
+          "label": "语言",
+          "localized_name": "language"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [],
+          "label": "生成音频",
+          "localized_name": "audio"
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": [],
+          "label": "生成报告",
+          "localized_name": "report"
+        },
+        {
+          "name": "reference_transcript",
+          "type": "STRING",
+          "links": [],
+          "label": "实际参考逐字稿",
+          "localized_name": "reference_transcript"
+        }
+      ],
+      "properties": {
+        "proxyWidgets": [
+          [
+            "6",
+            "value"
+          ],
+          [
+            "7",
+            "value"
+          ],
+          [
+            "-1",
+            "language"
+          ],
+          [
+            "8",
+            "value"
+          ]
+        ],
+        "cnr_id": "comfyui-fireredaudio-t8",
+        "ver": "0.16.0"
+      },
+      "widgets_values": [],
+      "title": "FireRedAudio · 快速声音克隆"
+    }
+  ],
+  "links": [],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "frontendVersion": "1.49.6"
+  },
+  "version": 0.4,
+  "definitions": {
+    "subgraphs": [
+      {
+        "id": "2e540112-092a-512f-ab08-924d6b997143",
+        "version": 1,
+        "state": {
+          "lastGroupId": 0,
+          "lastNodeId": 8,
+          "lastLinkId": 14,
+          "lastRerouteId": 0
+        },
+        "revision": 0,
+        "config": {},
+        "name": "FireRedAudio · 快速声音克隆",
+        "inputNode": {
+          "id": -10,
+          "bounding": [
+            -220,
+            40,
+            160,
+            160
+          ]
+        },
+        "outputNode": {
+          "id": -20,
+          "bounding": [
+            1420,
+            40,
+            160,
+            130
+          ]
+        },
+        "inputs": [
+          {
+            "id": "b5619235-b9b9-5c2e-86b8-1834f520f76c",
+            "name": "model",
+            "type": "T8_FIREREDAUDIO_MODEL",
+            "linkIds": [
+              5
+            ],
+            "localized_name": "model",
+            "label": "model",
+            "pos": [
+              -180,
+              80
+            ]
+          },
+          {
+            "id": "0f35d324-6ada-5f03-8dd8-2acc8c5ce6b1",
+            "name": "prompt_audio",
+            "type": "AUDIO",
+            "linkIds": [
+              6
+            ],
+            "localized_name": "prompt_audio",
+            "label": "prompt_audio",
+            "pos": [
+              -180,
+              110
+            ]
+          },
+          {
+            "id": "bc9f3f6e-6c5f-5bce-8dd4-f538be9a2b1d",
+            "name": "settings",
+            "type": "T8_FIREREDAUDIO_SETTINGS",
+            "linkIds": [
+              7
+            ],
+            "localized_name": "settings",
+            "label": "settings",
+            "pos": [
+              -180,
+              140
+            ]
+          },
+          {
+            "id": "ccea8f32-a1e8-5659-909e-252eccdcc4d3",
+            "name": "language",
+            "type": "COMBO",
+            "linkIds": [
+              10
+            ],
+            "localized_name": "language",
+            "label": "语言",
+            "pos": [
+              -180,
+              170
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "id": "86c115d2-e9c3-5c54-9d39-d8a7ee070d54",
+            "name": "audio",
+            "type": "AUDIO",
+            "linkIds": [
+              12
+            ],
+            "localized_name": "audio",
+            "label": "生成音频",
+            "pos": [
+              1420,
+              80
+            ]
+          },
+          {
+            "id": "7f5e4968-d790-5586-ad44-7784fc6d0b4b",
+            "name": "report",
+            "type": "STRING",
+            "linkIds": [
+              13
+            ],
+            "localized_name": "report",
+            "label": "生成报告",
+            "pos": [
+              1420,
+              110
+            ]
+          },
+          {
+            "id": "80cb5c15-7021-5f61-bc52-78180cc8c371",
+            "name": "reference_transcript",
+            "type": "STRING",
+            "linkIds": [
+              14
+            ],
+            "localized_name": "reference_transcript",
+            "label": "实际参考逐字稿",
+            "pos": [
+              1420,
+              140
+            ]
+          }
+        ],
+        "widgets": [],
+        "nodes": [
+          {
+            "id": 4,
+            "type": "T8_FireRedAudio_TTS",
+            "pos": [
+              850,
+              180
+            ],
+            "size": [
+              390,
+              330
+            ],
+            "flags": {},
+            "order": 3,
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "model",
+                "type": "T8_FIREREDAUDIO_MODEL",
+                "link": 5
+              },
+              {
+                "name": "prompt_audio",
+                "type": "AUDIO",
+                "link": 6
+              },
+              {
+                "name": "settings",
+                "type": "T8_FIREREDAUDIO_SETTINGS",
+                "link": 7
+              },
+              {
+                "name": "prompt_text",
+                "type": "STRING",
+                "widget": {
+                  "name": "prompt_text"
+                },
+                "link": 8
+              },
+              {
+                "name": "target_text",
+                "type": "STRING",
+                "widget": {
+                  "name": "target_text"
+                },
+                "link": 9
+              },
+              {
+                "name": "language",
+                "type": "COMBO",
+                "widget": {
+                  "name": "language"
+                },
+                "link": 10
+              },
+              {
+                "name": "auto_transcribe_reference",
+                "type": "BOOLEAN",
+                "widget": {
+                  "name": "auto_transcribe_reference"
+                },
+                "link": 11
+              }
+            ],
+            "outputs": [
+              {
+                "name": "audio",
+                "type": "AUDIO",
+                "links": [
+                  4
+                ],
+                "slot_index": 0
+              },
+              {
+                "name": "report",
+                "type": "STRING",
+                "links": [
+                  13
+                ],
+                "slot_index": 0
+              },
+              {
+                "name": "reference_transcript",
+                "type": "STRING",
+                "links": [
+                  14
+                ],
+                "slot_index": 2
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "T8_FireRedAudio_TTS"
+            },
+            "widgets_values": [
+              "同时，他强调微调要科学有序。",
+              "欢迎使用 FireRedAudio，来自 T8star-Aix。",
+              "zh",
+              true
+            ]
+          },
+          {
+            "id": 5,
+            "type": "SaveAudio",
+            "pos": [
+              1300,
+              180
+            ],
+            "size": [
+              280,
+              120
+            ],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "audio",
+                "type": "AUDIO",
+                "link": 4
+              }
+            ],
+            "outputs": [
+              {
+                "name": "audio",
+                "type": "AUDIO",
+                "links": [
+                  12
+                ],
+                "slot_index": 0
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "SaveAudio"
+            },
+            "widgets_values": [
+              "fireredaudio/tts"
+            ]
+          },
+          {
+            "id": 6,
+            "type": "PrimitiveStringMultiline",
+            "pos": [
+              -420,
+              80
+            ],
+            "size": [
+              300,
+              120
+            ],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [
+              {
+                "label": "参考音频逐字稿（可留空自动 ASR）",
+                "localized_name": "value",
+                "name": "value",
+                "type": "STRING",
+                "widget": {
+                  "name": "value"
+                },
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "STRING",
+                "name": "STRING",
+                "type": "STRING",
+                "links": [
+                  8
+                ]
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "PrimitiveStringMultiline"
+            },
+            "widgets_values": [
+              "同时，他强调微调要科学有序。"
+            ],
+            "title": "参考音频逐字稿（可留空自动 ASR）"
+          },
+          {
+            "id": 7,
+            "type": "PrimitiveStringMultiline",
+            "pos": [
+              -420,
+              172
+            ],
+            "size": [
+              300,
+              120
+            ],
+            "flags": {},
+            "order": 3,
+            "mode": 0,
+            "inputs": [
+              {
+                "label": "目标文本",
+                "localized_name": "value",
+                "name": "value",
+                "type": "STRING",
+                "widget": {
+                  "name": "value"
+                },
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "STRING",
+                "name": "STRING",
+                "type": "STRING",
+                "links": [
+                  9
+                ]
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "PrimitiveStringMultiline"
+            },
+            "widgets_values": [
+              "欢迎使用 FireRedAudio，来自 T8star-Aix。"
+            ],
+            "title": "目标文本"
+          },
+          {
+            "id": 8,
+            "type": "PrimitiveBoolean",
+            "pos": [
+              -420,
+              356
+            ],
+            "size": [
+              300,
+              64
+            ],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [
+              {
+                "label": "逐字稿留空时自动 ASR",
+                "localized_name": "value",
+                "name": "value",
+                "type": "BOOLEAN",
+                "widget": {
+                  "name": "value"
+                },
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "BOOLEAN",
+                "name": "BOOLEAN",
+                "type": "BOOLEAN",
+                "links": [
+                  11
+                ]
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "PrimitiveBoolean"
+            },
+            "widgets_values": [
+              true
+            ],
+            "title": "逐字稿留空时自动 ASR"
+          }
+        ],
+        "groups": [],
+        "links": [
+          {
+            "id": 4,
+            "origin_id": 4,
+            "origin_slot": 0,
+            "target_id": 5,
+            "target_slot": 0,
+            "type": "AUDIO"
+          },
+          {
+            "id": 5,
+            "origin_id": -10,
+            "origin_slot": 0,
+            "target_id": 4,
+            "target_slot": 0,
+            "type": "T8_FIREREDAUDIO_MODEL"
+          },
+          {
+            "id": 6,
+            "origin_id": -10,
+            "origin_slot": 1,
+            "target_id": 4,
+            "target_slot": 1,
+            "type": "AUDIO"
+          },
+          {
+            "id": 7,
+            "origin_id": -10,
+            "origin_slot": 2,
+            "target_id": 4,
+            "target_slot": 2,
+            "type": "T8_FIREREDAUDIO_SETTINGS"
+          },
+          {
+            "id": 8,
+            "origin_id": 6,
+            "origin_slot": 0,
+            "target_id": 4,
+            "target_slot": 3,
+            "type": "STRING"
+          },
+          {
+            "id": 9,
+            "origin_id": 7,
+            "origin_slot": 0,
+            "target_id": 4,
+            "target_slot": 4,
+            "type": "STRING"
+          },
+          {
+            "id": 10,
+            "origin_id": -10,
+            "origin_slot": 3,
+            "target_id": 4,
+            "target_slot": 5,
+            "type": "COMBO"
+          },
+          {
+            "id": 11,
+            "origin_id": 8,
+            "origin_slot": 0,
+            "target_id": 4,
+            "target_slot": 6,
+            "type": "BOOLEAN"
+          },
+          {
+            "id": 12,
+            "origin_id": 5,
+            "origin_slot": 0,
+            "target_id": -20,
+            "target_slot": 0,
+            "type": "AUDIO"
+          },
+          {
+            "id": 13,
+            "origin_id": 4,
+            "origin_slot": 1,
+            "target_id": -20,
+            "target_slot": 1,
+            "type": "STRING"
+          },
+          {
+            "id": 14,
+            "origin_id": 4,
+            "origin_slot": 2,
+            "target_id": -20,
+            "target_slot": 2,
+            "type": "STRING"
+          }
+        ],
+        "extra": {
+          "t8starSourceWorkflow": "example_workflows/ui/01_zero_shot_tts.json"
+        }
+      }
+    ]
+  }
+}

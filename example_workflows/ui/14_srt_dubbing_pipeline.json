@@ -38,17 +38,17 @@
       },
       "widgets_values": [
         "FireRedAudio",
-        "",
         "auto",
         "auto",
         "auto_safe",
         "full",
         "managed",
-        "",
-        "",
-        "",
         false,
-        false
+        false,
+        "",
+        "",
+        "",
+        ""
       ]
     },
     {
@@ -224,8 +224,8 @@
       "widgets_values": [
         "1\n00:00:00,000 --> 00:00:02,500\n[旁白] 第一条字幕。\n\n2\n00:00:03,000 --> 00:00:05,500\n[旁白] 第二条字幕。",
         "srt",
-        "旁白",
-        true
+        true,
+        "旁白"
       ]
     },
     {
@@ -259,6 +259,7 @@
       "widgets_values": [
         "balanced",
         42,
+        "fixed",
         750,
         6,
         512,

@@ -116,13 +116,16 @@
         "8",
         0
       ],
-      "strategy": "safe_stretch",
+      "strategy": "speech_aware",
       "tolerance_seconds": 0.1,
       "maximum_speed": 1.15,
       "fit_underrun": false,
       "minimum_speed": 0.9,
-      "project_name": "v014-review-fit",
-      "subfolder": "fireredaudio/duration-fit"
+      "project_name": "v016-review-fit",
+      "subfolder": "fireredaudio/duration-fit",
+      "edge_silence_threshold_db": -40.0,
+      "edge_silence_min_seconds": 0.05,
+      "edge_padding_seconds": 0.12
     }
   },
   "10": {

@@ -1,0 +1,1041 @@
+{
+  "revision": 0,
+  "last_node_id": 1,
+  "last_link_id": 0,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "84dc3409-95ba-5919-8794-827b1c30681d",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        360,
+        246
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "T8_FIREREDAUDIO_MODEL",
+          "link": null,
+          "label": "model",
+          "localized_name": "model"
+        },
+        {
+          "name": "script_plan",
+          "type": "T8_FIREREDAUDIO_SCRIPT_PLAN",
+          "link": null,
+          "label": "script_plan",
+          "localized_name": "script_plan"
+        },
+        {
+          "name": "voice_bank",
+          "type": "T8_FIREREDAUDIO_VOICE_BANK",
+          "link": null,
+          "label": "voice_bank",
+          "localized_name": "voice_bank"
+        },
+        {
+          "name": "settings",
+          "type": "T8_FIREREDAUDIO_SETTINGS",
+          "link": null,
+          "label": "settings",
+          "localized_name": "settings"
+        },
+        {
+          "name": "strategy",
+          "type": "COMBO",
+          "widget": {
+            "name": "strategy"
+          },
+          "link": null,
+          "label": "时长适配策略",
+          "localized_name": "strategy"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio_batch",
+          "type": "T8_FIREREDAUDIO_AUDIO_BATCH",
+          "links": [],
+          "label": "时长适配批次",
+          "localized_name": "audio_batch"
+        },
+        {
+          "name": "manifest_path",
+          "type": "STRING",
+          "links": [],
+          "label": "时长适配 Manifest",
+          "localized_name": "manifest_path"
+        },
+        {
+          "name": "duration_retry_line_ids",
+          "type": "STRING",
+          "links": [],
+          "label": "时长重做 line ID",
+          "localized_name": "duration_retry_line_ids"
+        },
+        {
+          "name": "qa",
+          "type": "T8_FIREREDAUDIO_SPEECH_QA",
+          "links": [],
+          "label": "Speech QA",
+          "localized_name": "qa"
+        },
+        {
+          "name": "qa_report",
+          "type": "STRING",
+          "links": [],
+          "label": "QA 报告",
+          "localized_name": "qa_report"
+        },
+        {
+          "name": "qa_failed_line_ids",
+          "type": "STRING",
+          "links": [],
+          "label": "QA 失败 line ID",
+          "localized_name": "qa_failed_line_ids"
+        }
+      ],
+      "properties": {
+        "proxyWidgets": [
+          [
+            "11",
+            "value"
+          ],
+          [
+            "12",
+            "value"
+          ],
+          [
+            "13",
+            "value"
+          ],
+          [
+            "-1",
+            "strategy"
+          ],
+          [
+            "14",
+            "value"
+          ],
+          [
+            "15",
+            "value"
+          ]
+        ],
+        "cnr_id": "comfyui-fireredaudio-t8",
+        "ver": "0.16.0"
+      },
+      "widgets_values": [],
+      "title": "FireRedAudio · SRT 初稿与 QA"
+    }
+  ],
+  "links": [],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "frontendVersion": "1.49.6"
+  },
+  "version": 0.4,
+  "definitions": {
+    "subgraphs": [
+      {
+        "id": "84dc3409-95ba-5919-8794-827b1c30681d",
+        "version": 1,
+        "state": {
+          "lastGroupId": 0,
+          "lastNodeId": 15,
+          "lastLinkId": 41,
+          "lastRerouteId": 0
+        },
+        "revision": 0,
+        "config": {},
+        "name": "FireRedAudio · SRT 初稿与 QA",
+        "inputNode": {
+          "id": -10,
+          "bounding": [
+            -220,
+            40,
+            160,
+            190
+          ]
+        },
+        "outputNode": {
+          "id": -20,
+          "bounding": [
+            1420,
+            40,
+            160,
+            220
+          ]
+        },
+        "inputs": [
+          {
+            "id": "9bb82052-6223-52eb-b55b-bc4a04c3a0d2",
+            "name": "model",
+            "type": "T8_FIREREDAUDIO_MODEL",
+            "linkIds": [
+              25,
+              26
+            ],
+            "localized_name": "model",
+            "label": "model",
+            "pos": [
+              -180,
+              80
+            ]
+          },
+          {
+            "id": "0da5e209-c62b-5e9b-aaf2-435163432abb",
+            "name": "script_plan",
+            "type": "T8_FIREREDAUDIO_SCRIPT_PLAN",
+            "linkIds": [
+              27
+            ],
+            "localized_name": "script_plan",
+            "label": "script_plan",
+            "pos": [
+              -180,
+              110
+            ]
+          },
+          {
+            "id": "e52af861-4277-5b01-aea1-9d60dc879ac2",
+            "name": "voice_bank",
+            "type": "T8_FIREREDAUDIO_VOICE_BANK",
+            "linkIds": [
+              28
+            ],
+            "localized_name": "voice_bank",
+            "label": "voice_bank",
+            "pos": [
+              -180,
+              140
+            ]
+          },
+          {
+            "id": "37dcca9c-99f9-57da-9749-fef38247709e",
+            "name": "settings",
+            "type": "T8_FIREREDAUDIO_SETTINGS",
+            "linkIds": [
+              29
+            ],
+            "localized_name": "settings",
+            "label": "settings",
+            "pos": [
+              -180,
+              170
+            ]
+          },
+          {
+            "id": "49d62b86-ec31-5f91-9361-70d70d763def",
+            "name": "strategy",
+            "type": "COMBO",
+            "linkIds": [
+              33
+            ],
+            "localized_name": "strategy",
+            "label": "时长适配策略",
+            "pos": [
+              -180,
+              200
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "id": "fa0957a6-8ba8-5881-a286-40ed6e5b7c97",
+            "name": "audio_batch",
+            "type": "T8_FIREREDAUDIO_AUDIO_BATCH",
+            "linkIds": [
+              36
+            ],
+            "localized_name": "audio_batch",
+            "label": "时长适配批次",
+            "pos": [
+              1420,
+              80
+            ]
+          },
+          {
+            "id": "66e72444-c9c8-5bc1-9070-7993164a9988",
+            "name": "manifest_path",
+            "type": "STRING",
+            "linkIds": [
+              37
+            ],
+            "localized_name": "manifest_path",
+            "label": "时长适配 Manifest",
+            "pos": [
+              1420,
+              110
+            ]
+          },
+          {
+            "id": "de72ca79-ab6f-5fe5-93b6-3fc372cdce34",
+            "name": "duration_retry_line_ids",
+            "type": "STRING",
+            "linkIds": [
+              38
+            ],
+            "localized_name": "duration_retry_line_ids",
+            "label": "时长重做 line ID",
+            "pos": [
+              1420,
+              140
+            ]
+          },
+          {
+            "id": "7f475d16-e4e3-52bc-a129-4c7a3ea3cb2b",
+            "name": "qa",
+            "type": "T8_FIREREDAUDIO_SPEECH_QA",
+            "linkIds": [
+              39
+            ],
+            "localized_name": "qa",
+            "label": "Speech QA",
+            "pos": [
+              1420,
+              170
+            ]
+          },
+          {
+            "id": "1902ad81-02cf-5431-85d7-0d6a2494ec09",
+            "name": "qa_report",
+            "type": "STRING",
+            "linkIds": [
+              40
+            ],
+            "localized_name": "qa_report",
+            "label": "QA 报告",
+            "pos": [
+              1420,
+              200
+            ]
+          },
+          {
+            "id": "a327f26a-db24-583c-9172-9055f69f18a6",
+            "name": "qa_failed_line_ids",
+            "type": "STRING",
+            "linkIds": [
+              41
+            ],
+            "localized_name": "qa_failed_line_ids",
+            "label": "QA 失败 line ID",
+            "pos": [
+              1420,
+              230
+            ]
+          }
+        ],
+        "widgets": [],
+        "nodes": [
+          {
+            "id": 6,
+            "type": "T8_FireRedAudio_TextNormalizer",
+            "pos": [
+              1410,
+              80
+            ],
+            "size": [
+              460,
+              340
+            ],
+            "flags": {},
+            "order": 5,
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "script_plan",
+                "type": "T8_FIREREDAUDIO_SCRIPT_PLAN",
+                "link": 27
+              },
+              {
+                "name": "replacement_dictionary_json",
+                "type": "STRING",
+                "widget": {
+                  "name": "replacement_dictionary_json"
+                },
+                "link": 30
+              }
+            ],
+            "outputs": [
+              {
+                "name": "script_plan",
+                "type": "T8_FIREREDAUDIO_SCRIPT_PLAN",
+                "links": [
+                  6
+                ],
+                "slot_index": 0
+              },
+              {
+                "name": "normalized_json",
+                "type": "STRING",
+                "links": null,
+                "slot_index": 1
+              },
+              {
+                "name": "changed_line_ids",
+                "type": "STRING",
+                "links": null,
+                "slot_index": 2
+              },
+              {
+                "name": "normalization_report",
+                "type": "STRING",
+                "links": null,
+                "slot_index": 3
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "T8_FireRedAudio_TextNormalizer"
+            },
+            "widgets_values": [
+              "{\"API\":\"A P I\"}",
+              true,
+              true,
+              true,
+              false
+            ]
+          },
+          {
+            "id": 8,
+            "type": "T8_FireRedAudio_BatchDubbing",
+            "pos": [
+              1930,
+              100
+            ],
+            "size": [
+              470,
+              420
+            ],
+            "flags": {},
+            "order": 7,
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "model",
+                "type": "T8_FIREREDAUDIO_MODEL",
+                "link": 25
+              },
+              {
+                "name": "script_plan",
+                "type": "T8_FIREREDAUDIO_SCRIPT_PLAN",
+                "link": 6
+              },
+              {
+                "name": "voice_bank",
+                "type": "T8_FIREREDAUDIO_VOICE_BANK",
+                "link": 28
+              },
+              {
+                "name": "settings",
+                "type": "T8_FIREREDAUDIO_SETTINGS",
+                "link": 29
+              },
+              {
+                "name": "project_name",
+                "type": "STRING",
+                "widget": {
+                  "name": "project_name"
+                },
+                "link": 31
+              },
+              {
+                "name": "batch_size",
+                "type": "INT",
+                "widget": {
+                  "name": "batch_size"
+                },
+                "link": 32
+              }
+            ],
+            "outputs": [
+              {
+                "name": "audio_batch",
+                "type": "T8_FIREREDAUDIO_AUDIO_BATCH",
+                "links": [
+                  12
+                ],
+                "slot_index": 0
+              },
+              {
+                "name": "manifest_path",
+                "type": "STRING",
+                "links": null,
+                "slot_index": 1
+              },
+              {
+                "name": "batch_report",
+                "type": "STRING",
+                "links": null,
+                "slot_index": 2
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "T8_FireRedAudio_BatchDubbing"
+            },
+            "widgets_values": [
+              "v014-review-demo",
+              "fireredaudio/projects",
+              true,
+              true,
+              8
+            ]
+          },
+          {
+            "id": 9,
+            "type": "T8_FireRedAudio_DurationFit",
+            "pos": [
+              2470,
+              100
+            ],
+            "size": [
+              470,
+              450
+            ],
+            "flags": {},
+            "order": 8,
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "audio_batch",
+                "type": "T8_FIREREDAUDIO_AUDIO_BATCH",
+                "link": 12
+              },
+              {
+                "name": "strategy",
+                "type": "COMBO",
+                "widget": {
+                  "name": "strategy"
+                },
+                "link": 33
+              },
+              {
+                "name": "maximum_speed",
+                "type": "FLOAT",
+                "widget": {
+                  "name": "maximum_speed"
+                },
+                "link": 34
+              }
+            ],
+            "outputs": [
+              {
+                "name": "audio_batch",
+                "type": "T8_FIREREDAUDIO_AUDIO_BATCH",
+                "links": [
+                  14,
+                  36
+                ],
+                "slot_index": 0
+              },
+              {
+                "name": "manifest_path",
+                "type": "STRING",
+                "links": [
+                  37
+                ],
+                "slot_index": 1
+              },
+              {
+                "name": "retry_line_ids",
+                "type": "STRING",
+                "links": [
+                  38
+                ],
+                "slot_index": 2
+              },
+              {
+                "name": "fit_report",
+                "type": "STRING",
+                "links": null,
+                "slot_index": 3
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "T8_FireRedAudio_DurationFit"
+            },
+            "widgets_values": [
+              "speech_aware",
+              0.1,
+              1.15,
+              false,
+              0.9,
+              "v016-review-fit",
+              "fireredaudio/duration-fit",
+              -40.0,
+              0.05,
+              0.12
+            ]
+          },
+          {
+            "id": 10,
+            "type": "T8_FireRedAudio_SpeechQA",
+            "pos": [
+              3010,
+              100
+            ],
+            "size": [
+              440,
+              350
+            ],
+            "flags": {},
+            "order": 9,
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "model",
+                "type": "T8_FIREREDAUDIO_MODEL",
+                "link": 26
+              },
+              {
+                "name": "audio_batch",
+                "type": "T8_FIREREDAUDIO_AUDIO_BATCH",
+                "link": 14
+              },
+              {
+                "name": "max_text_error_rate",
+                "type": "FLOAT",
+                "widget": {
+                  "name": "max_text_error_rate"
+                },
+                "link": 35
+              }
+            ],
+            "outputs": [
+              {
+                "name": "qa",
+                "type": "T8_FIREREDAUDIO_SPEECH_QA",
+                "links": [
+                  39
+                ],
+                "slot_index": 0
+              },
+              {
+                "name": "qa_report",
+                "type": "STRING",
+                "links": [
+                  40
+                ],
+                "slot_index": 1
+              },
+              {
+                "name": "failed_line_ids",
+                "type": "STRING",
+                "links": [
+                  41
+                ],
+                "slot_index": 2
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "T8_FireRedAudio_SpeechQA"
+            },
+            "widgets_values": [
+              0.2,
+              0.001,
+              0.8,
+              0.5,
+              512,
+              true,
+              false
+            ]
+          },
+          {
+            "id": 11,
+            "type": "PrimitiveStringMultiline",
+            "pos": [
+              -420,
+              80
+            ],
+            "size": [
+              300,
+              120
+            ],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [
+              {
+                "label": "朗读替换词典 JSON",
+                "localized_name": "value",
+                "name": "value",
+                "type": "STRING",
+                "widget": {
+                  "name": "value"
+                },
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "STRING",
+                "name": "STRING",
+                "type": "STRING",
+                "links": [
+                  30
+                ]
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "PrimitiveStringMultiline"
+            },
+            "widgets_values": [
+              "{\"API\":\"A P I\"}"
+            ],
+            "title": "朗读替换词典 JSON"
+          },
+          {
+            "id": 12,
+            "type": "PrimitiveStringMultiline",
+            "pos": [
+              -420,
+              172
+            ],
+            "size": [
+              300,
+              120
+            ],
+            "flags": {},
+            "order": 5,
+            "mode": 0,
+            "inputs": [
+              {
+                "label": "项目名",
+                "localized_name": "value",
+                "name": "value",
+                "type": "STRING",
+                "widget": {
+                  "name": "value"
+                },
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "STRING",
+                "name": "STRING",
+                "type": "STRING",
+                "links": [
+                  31
+                ]
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "PrimitiveStringMultiline"
+            },
+            "widgets_values": [
+              "v014-review-demo"
+            ],
+            "title": "项目名"
+          },
+          {
+            "id": 13,
+            "type": "PrimitiveInt",
+            "pos": [
+              -420,
+              264
+            ],
+            "size": [
+              300,
+              64
+            ],
+            "flags": {},
+            "order": 6,
+            "mode": 0,
+            "inputs": [
+              {
+                "label": "每批条数",
+                "localized_name": "value",
+                "name": "value",
+                "type": "INT",
+                "widget": {
+                  "name": "value"
+                },
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "INT",
+                "name": "INT",
+                "type": "INT",
+                "links": [
+                  32
+                ]
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "PrimitiveInt"
+            },
+            "widgets_values": [
+              8,
+              "fixed"
+            ],
+            "title": "每批条数"
+          },
+          {
+            "id": 14,
+            "type": "PrimitiveFloat",
+            "pos": [
+              -420,
+              448
+            ],
+            "size": [
+              300,
+              64
+            ],
+            "flags": {},
+            "order": 7,
+            "mode": 0,
+            "inputs": [
+              {
+                "label": "最大安全加速倍率",
+                "localized_name": "value",
+                "name": "value",
+                "type": "FLOAT",
+                "widget": {
+                  "name": "value"
+                },
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "FLOAT",
+                "name": "FLOAT",
+                "type": "FLOAT",
+                "links": [
+                  34
+                ]
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "PrimitiveFloat"
+            },
+            "widgets_values": [
+              1.15
+            ],
+            "title": "最大安全加速倍率"
+          },
+          {
+            "id": 15,
+            "type": "PrimitiveFloat",
+            "pos": [
+              -420,
+              540
+            ],
+            "size": [
+              300,
+              64
+            ],
+            "flags": {},
+            "order": 8,
+            "mode": 0,
+            "inputs": [
+              {
+                "label": "最大 CER/WER",
+                "localized_name": "value",
+                "name": "value",
+                "type": "FLOAT",
+                "widget": {
+                  "name": "value"
+                },
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "FLOAT",
+                "name": "FLOAT",
+                "type": "FLOAT",
+                "links": [
+                  35
+                ]
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "PrimitiveFloat"
+            },
+            "widgets_values": [
+              0.2
+            ],
+            "title": "最大 CER/WER"
+          }
+        ],
+        "groups": [],
+        "links": [
+          {
+            "id": 6,
+            "origin_id": 6,
+            "origin_slot": 0,
+            "target_id": 8,
+            "target_slot": 1,
+            "type": "T8_FIREREDAUDIO_SCRIPT_PLAN"
+          },
+          {
+            "id": 12,
+            "origin_id": 8,
+            "origin_slot": 0,
+            "target_id": 9,
+            "target_slot": 0,
+            "type": "T8_FIREREDAUDIO_AUDIO_BATCH"
+          },
+          {
+            "id": 14,
+            "origin_id": 9,
+            "origin_slot": 0,
+            "target_id": 10,
+            "target_slot": 1,
+            "type": "T8_FIREREDAUDIO_AUDIO_BATCH"
+          },
+          {
+            "id": 25,
+            "origin_id": -10,
+            "origin_slot": 0,
+            "target_id": 8,
+            "target_slot": 0,
+            "type": "T8_FIREREDAUDIO_MODEL"
+          },
+          {
+            "id": 26,
+            "origin_id": -10,
+            "origin_slot": 0,
+            "target_id": 10,
+            "target_slot": 0,
+            "type": "T8_FIREREDAUDIO_MODEL"
+          },
+          {
+            "id": 27,
+            "origin_id": -10,
+            "origin_slot": 1,
+            "target_id": 6,
+            "target_slot": 0,
+            "type": "T8_FIREREDAUDIO_SCRIPT_PLAN"
+          },
+          {
+            "id": 28,
+            "origin_id": -10,
+            "origin_slot": 2,
+            "target_id": 8,
+            "target_slot": 2,
+            "type": "T8_FIREREDAUDIO_VOICE_BANK"
+          },
+          {
+            "id": 29,
+            "origin_id": -10,
+            "origin_slot": 3,
+            "target_id": 8,
+            "target_slot": 3,
+            "type": "T8_FIREREDAUDIO_SETTINGS"
+          },
+          {
+            "id": 30,
+            "origin_id": 11,
+            "origin_slot": 0,
+            "target_id": 6,
+            "target_slot": 1,
+            "type": "STRING"
+          },
+          {
+            "id": 31,
+            "origin_id": 12,
+            "origin_slot": 0,
+            "target_id": 8,
+            "target_slot": 4,
+            "type": "STRING"
+          },
+          {
+            "id": 32,
+            "origin_id": 13,
+            "origin_slot": 0,
+            "target_id": 8,
+            "target_slot": 5,
+            "type": "INT"
+          },
+          {
+            "id": 33,
+            "origin_id": -10,
+            "origin_slot": 4,
+            "target_id": 9,
+            "target_slot": 1,
+            "type": "COMBO"
+          },
+          {
+            "id": 34,
+            "origin_id": 14,
+            "origin_slot": 0,
+            "target_id": 9,
+            "target_slot": 2,
+            "type": "FLOAT"
+          },
+          {
+            "id": 35,
+            "origin_id": 15,
+            "origin_slot": 0,
+            "target_id": 10,
+            "target_slot": 2,
+            "type": "FLOAT"
+          },
+          {
+            "id": 36,
+            "origin_id": 9,
+            "origin_slot": 0,
+            "target_id": -20,
+            "target_slot": 0,
+            "type": "T8_FIREREDAUDIO_AUDIO_BATCH"
+          },
+          {
+            "id": 37,
+            "origin_id": 9,
+            "origin_slot": 1,
+            "target_id": -20,
+            "target_slot": 1,
+            "type": "STRING"
+          },
+          {
+            "id": 38,
+            "origin_id": 9,
+            "origin_slot": 2,
+            "target_id": -20,
+            "target_slot": 2,
+            "type": "STRING"
+          },
+          {
+            "id": 39,
+            "origin_id": 10,
+            "origin_slot": 0,
+            "target_id": -20,
+            "target_slot": 3,
+            "type": "T8_FIREREDAUDIO_SPEECH_QA"
+          },
+          {
+            "id": 40,
+            "origin_id": 10,
+            "origin_slot": 1,
+            "target_id": -20,
+            "target_slot": 4,
+            "type": "STRING"
+          },
+          {
+            "id": 41,
+            "origin_id": 10,
+            "origin_slot": 2,
+            "target_id": -20,
+            "target_slot": 5,
+            "type": "STRING"
+          }
+        ],
+        "extra": {
+          "t8starSourceWorkflow": "example_workflows/ui/26_production_review_loop.json"
+        }
+      }
+    ]
+  }
+}

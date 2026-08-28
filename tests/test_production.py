@@ -594,7 +594,7 @@ class ExampleWorkflowTests(unittest.TestCase):
             ]
             for loader in loaders:
                 self.assertGreaterEqual(len(loader["widgets_values"]), 5, path.name)
-                self.assertEqual(loader["widgets_values"][4], "auto_safe", path.name)
+                self.assertEqual(loader["widgets_values"][3], "auto_safe", path.name)
 
     def test_v010_creator_workflows_cover_reference_asr_audition_and_evidence(self) -> None:
         expected = {

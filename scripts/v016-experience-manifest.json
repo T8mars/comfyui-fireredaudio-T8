@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "templates": [
+    "FireRedAudio_01_Quick_TTS.app.json",
+    "FireRedAudio_02_Voice_Design.app.json",
+    "FireRedAudio_03_Long_Reference_Screening.app.json",
+    "FireRedAudio_04_Podcast_Local_Repair.app.json",
+    "FireRedAudio_05_Multirole_QA_Delivery.json",
+    "FireRedAudio_06_SRT_Production_Review.json",
+    "FireRedAudio_07_Creative_Line_Candidates.json"
+  ],
+  "subgraphs": [
+    "FireRedAudio Quick TTS.json",
+    "FireRedAudio Batch QA Repair Delivery.json",
+    "FireRedAudio SRT Draft QA.json",
+    "FireRedAudio Local Speech Repair.json",
+    "FireRedAudio Creative Line Candidates.json"
+  ],
+  "app_mode_templates": [
+    "FireRedAudio_01_Quick_TTS.app.json",
+    "FireRedAudio_02_Voice_Design.app.json",
+    "FireRedAudio_03_Long_Reference_Screening.app.json",
+    "FireRedAudio_04_Podcast_Local_Repair.app.json"
+  ],
+  "graph_templates": [
+    "FireRedAudio_05_Multirole_QA_Delivery.json",
+    "FireRedAudio_06_SRT_Production_Review.json",
+    "FireRedAudio_07_Creative_Line_Candidates.json"
+  ]
+}

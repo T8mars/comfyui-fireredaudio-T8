@@ -39,17 +39,17 @@
       },
       "widgets_values": [
         "FireRedAudio",
-        "",
         "auto",
         "auto",
         "auto_safe",
         "full",
         "managed",
-        "",
-        "",
-        "",
         false,
-        false
+        false,
+        "",
+        "",
+        "",
+        ""
       ]
     },
     {
@@ -221,12 +221,12 @@
       },
       "widgets_values": [
         1,
-        "",
         "{}",
         "{}",
         "reference-review",
         "fireredaudio/reviews",
-        8
+        8,
+        ""
       ]
     },
     {

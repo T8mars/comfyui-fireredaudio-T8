@@ -38,17 +38,17 @@
       },
       "widgets_values": [
         "FireRedAudio",
-        "",
         "auto",
         "auto",
         "auto_safe",
         "full",
         "managed",
-        "",
-        "",
-        "",
         false,
-        false
+        false,
+        "",
+        "",
+        "",
+        ""
       ]
     },
     {
@@ -116,6 +116,7 @@
       "widgets_values": [
         "balanced",
         42,
+        "fixed",
         750,
         6,
         512,
@@ -262,12 +263,12 @@
       },
       "widgets_values": [
         1,
-        "",
         "{\"take-001\": 5, \"take-002\": 4}",
         "{\"take-001\": \"最自然\"}",
         "blind-review",
         "fireredaudio/reviews",
-        4
+        4,
+        ""
       ]
     },
     {

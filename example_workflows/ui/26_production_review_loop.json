@@ -41,17 +41,17 @@
       },
       "widgets_values": [
         "FireRedAudio",
-        "",
         "auto",
         "auto",
         "auto_safe",
         "full",
         "managed",
-        "",
-        "",
-        "",
         false,
-        false
+        false,
+        "",
+        "",
+        "",
+        ""
       ]
     },
     {
@@ -228,8 +228,8 @@
       "widgets_values": [
         "1\n00:00:00,000 --> 00:00:02,500\n[旁白] ＡＰＩ 于 2026-08-28 发布。\n\n2\n00:00:02,500 --> 00:00:05,000\n[旁白] 第二句进入逐句审核与返修闭环。",
         "srt",
-        "旁白",
-        true
+        true,
+        "旁白"
       ]
     },
     {
@@ -325,6 +325,7 @@
       "widgets_values": [
         "balanced",
         42,
+        "fixed",
         750,
         6,
         512,
@@ -410,7 +411,7 @@
       ],
       "size": [
         470,
-        400
+        450
       ],
       "flags": {},
       "order": 8,
@@ -455,13 +456,16 @@
         "Node name for S&R": "T8_FireRedAudio_DurationFit"
       },
       "widgets_values": [
-        "safe_stretch",
+        "speech_aware",
         0.1,
         1.15,
         false,
         0.9,
-        "v014-review-fit",
-        "fireredaudio/duration-fit"
+        "v016-review-fit",
+        "fireredaudio/duration-fit",
+        -40.0,
+        0.05,
+        0.12
       ]
     },
     {
