@@ -7,8 +7,7 @@ __pycache__/
 build/
 dist/
 *.egg-info/
-validation/real-model-*/
-validation/upstream-report.json
+validation/
 .idea/
 .vscode/
 .DS_Store

@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "runtimeId": "win-x64-py310-torch2.8.0-cu128-transformers5.8.0-r1",
   "worker": {
     "python": "3.10.x",
     "torch": "2.8.0",

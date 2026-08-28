@@ -15,4 +15,5 @@ Thumbs.db
 # Build output
 build/
 dist/
+validation/
 *.egg-info/

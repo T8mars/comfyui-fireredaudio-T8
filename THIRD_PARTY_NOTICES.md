@@ -3,9 +3,11 @@
 ## FireRedAudio
 
 - Project: https://github.com/FireRedTeam/FireRedAudio
-- Model: https://huggingface.co/FireRedTeam/FireRedAudio
+- Upstream model: https://huggingface.co/FireRedTeam/FireRedAudio
+- T8star-Aix distribution mirror: https://huggingface.co/t8star/Firered-Audio-Comfy
 - Pinned code revision: `88b826378023eb9a49b297214568398a300e5c32`
-- Pinned model revision: `3abf43d7539a2fc05991b9f89295c892f0a034f0`
+- Upstream source model revision: `3abf43d7539a2fc05991b9f89295c892f0a034f0`
+- Pinned T8star-Aix mirror revision: `ffd450cf336a929f4ceb1eaaff4c7ba4e4af34bb`
 - License: Apache License 2.0. The complete license text is retained in `LICENSE`.
 
 FireRedAudio acknowledges Qwen3.5, Whisper-large-v3, x-transformers, and vocos. Their packages and binary distributions retain their respective metadata and license files in the packaged Python environment.

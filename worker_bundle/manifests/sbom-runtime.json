@@ -175,6 +175,14 @@
       ]
     },
     {
+      "name": "iniconfig",
+      "version": "2.3.0",
+      "license": "MIT",
+      "licenseFiles": [
+        "iniconfig-2.3.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
       "name": "Jinja2",
       "version": "3.1.6",
       "license": "UNKNOWN",
@@ -276,6 +284,14 @@
       ]
     },
     {
+      "name": "pluggy",
+      "version": "1.6.0",
+      "license": "MIT",
+      "licenseFiles": [
+        "pluggy-1.6.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
       "name": "psutil",
       "version": "7.0.0",
       "license": "BSD-3-Clause",
@@ -316,6 +332,14 @@
       ]
     },
     {
+      "name": "pytest",
+      "version": "9.1.1",
+      "license": "MIT",
+      "licenseFiles": [
+        "pytest-9.1.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
       "name": "PyYAML",
       "version": "6.0.3",
       "license": "MIT",
@@ -337,6 +361,14 @@
       "license": "MIT",
       "licenseFiles": [
         "rich-15.0.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "ruff",
+      "version": "0.16.4",
+      "license": "MIT",
+      "licenseFiles": [
+        "ruff-0.16.4.dist-info/licenses/LICENSE"
       ]
     },
     {
@@ -400,6 +432,14 @@
       "version": "0.22.2",
       "license": "UNKNOWN",
       "licenseFiles": []
+    },
+    {
+      "name": "tomli",
+      "version": "2.4.1",
+      "license": "MIT",
+      "licenseFiles": [
+        "tomli-2.4.1.dist-info/licenses/LICENSE"
+      ]
     },
     {
       "name": "torch",

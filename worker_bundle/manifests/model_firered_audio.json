@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "codeRepository": "FireRedTeam/FireRedAudio",
   "codeRevision": "88b826378023eb9a49b297214568398a300e5c32",
-  "modelRepository": "FireRedTeam/FireRedAudio",
-  "modelRevision": "3abf43d7539a2fc05991b9f89295c892f0a034f0",
+  "modelRepository": "t8star/Firered-Audio-Comfy",
+  "modelRevision": "ffd450cf336a929f4ceb1eaaff4c7ba4e4af34bb",
   "license": "Apache-2.0",
   "profiles": {
     "lite": {

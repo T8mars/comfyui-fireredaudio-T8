@@ -113,7 +113,7 @@ AudioBatchType = io.Custom("T8_FIREREDAUDIO_AUDIO_BATCH")
 SpeechQAType = io.Custom("T8_FIREREDAUDIO_SPEECH_QA")
 DeliveryPresetType = io.Custom("T8_FIREREDAUDIO_DELIVERY_PRESET")
 LocalRepairPlanType = io.Custom("T8_FIREREDAUDIO_LOCAL_REPAIR_PLAN")
-NODE_VERSION = "0.17.0"
+NODE_VERSION = "0.18.0"
 
 LONG_LOCATE_PROMPTS = {
     "timeline_summary": (

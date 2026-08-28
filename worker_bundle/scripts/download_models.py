@@ -11,7 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from fireredaudio_t8.constants import MODEL_REPOSITORY, MODEL_REVISION
+from fireredaudio_t8.constants import (
+    MODEL_REPOSITORY,
+    MODEL_REVISION,
+    MODELSCOPE_MODEL_REPOSITORY,
+    MODELSCOPE_MODEL_REVISION,
+)
 from fireredaudio_t8.model_manager import (
     load_manifest,
     required_file_entries,
@@ -138,8 +143,8 @@ def download_modelscope(target: Path, profile: str) -> None:
     except ImportError as exc:
         raise RuntimeError("缺少 modelscope；请安装 modelscope 后重试") from exc
     snapshot_download(
-        MODEL_REPOSITORY,
-        revision=MODEL_REVISION,
+        MODELSCOPE_MODEL_REPOSITORY,
+        revision=MODELSCOPE_MODEL_REVISION,
         local_dir=str(target),
         allow_patterns=patterns(profile),
     )
@@ -163,7 +168,7 @@ def main() -> int:
         sources = (
             [args.source]
             if args.source != "auto"
-            else ["modelscope", "huggingface"]
+            else ["huggingface", "modelscope"]
         )
         for source in sources:
             try:

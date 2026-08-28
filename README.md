@@ -89,6 +89,12 @@ v0.7 起，同一 Worker 中重复使用相同参考音频会命中 CPU LRU 条�
 
 ## 模型
 
+桌面版和 ComfyUI 共用模型仓库：
+
+**https://huggingface.co/t8star/Firered-Audio-Comfy**
+
+仓库保留官方目录结构并固定不可变 revision；同一份下载目录可以在桌面版中直接选择，也可以放入 ComfyUI 的默认扫描目录。
+
 默认扫描：
 
 ```text
@@ -106,6 +112,8 @@ Lite 仅下载主模型，支持 ASR/理解；Full 增加 RedAE decoder，支持
 ```powershell
 python scripts/download_models.py --target "D:\ComfyUI\models\TTS\FireRedAudio" --profile full
 ```
+
+下载器默认先使用上述 Hugging Face 仓库，失败时才尝试上游 ModelScope；支持断点续传、磁盘预检、固定 revision 和下载后文件大小校验。完整 SHA-256 校验可追加 `--full-hash`。
 
 ## 基础工作流
 

@@ -33,22 +33,22 @@ def inspect_update_manifest(manifest_path: str | Path, package_path: str | Path)
     if channel not in {"stable", "testing"}:
         raise WorkerProtocolError("更新通道必须是 stable/testing")
     artifacts = manifest.get("artifacts")
-    if not isinstance(artifacts, list):
-        raise WorkerProtocolError("更新 manifest 缺少 artifacts")
+    components = manifest.get("components")
+    if not isinstance(artifacts, list) and not isinstance(components, list):
+        raise WorkerProtocolError("更新 manifest 缺少 artifacts/components")
     package_name = package.name.lower()
-    artifact = next(
-        (
-            item
-            for item in artifacts
-            if isinstance(item, dict)
-            and str(item.get("name") or "").lower() == package_name
-        ),
-        None,
-    )
+    candidates = []
+    for item in artifacts or []:
+        if isinstance(item, dict):
+            candidates.append({**item, "name": item.get("name")})
+    for item in components or []:
+        if isinstance(item, dict) and item.get("kind") == "app":
+            candidates.append({**item, "name": item.get("asset_name")})
+    artifact = next((item for item in candidates if str(item.get("name") or "").lower() == package_name), None)
     if artifact is None:
         desktop_artifacts = [
             item
-            for item in artifacts
+            for item in candidates
             if isinstance(item, dict) and "win64" in str(item.get("name") or "").lower()
         ]
         if len(desktop_artifacts) == 1:
@@ -79,6 +79,9 @@ def inspect_update_manifest(manifest_path: str | Path, package_path: str | Path)
         "package": str(package),
         "size": actual_size,
         "sha256": actual_hash,
+        "component_id": str(artifact.get("id") or f"desktop-app-{version}"),
+        "component_kind": str(artifact.get("kind") or "legacy-app"),
+        "manifest_schema": int(manifest.get("schema_version") or 1),
     }
 
 
@@ -139,8 +142,9 @@ def install_update(
         for version in state.get("history", []):
             if version != report["version"] and VERSION_RE.fullmatch(str(version)):
                 history.append(str(version))
+        runtime_component = _runtime_component(root, state, previous)
         new_state = {
-            "schema_version": 1,
+            "schema_version": 2,
             "current": report["version"],
             "previous": previous if previous != report["version"] else state.get("previous"),
             "channel": report["channel"],
@@ -148,9 +152,26 @@ def install_update(
             "source": report["source"],
             "installed_at": datetime.now(timezone.utc).isoformat(),
             "history": history[:2],
+            "components": {
+                **(state.get("components") if isinstance(state.get("components"), dict) else {}),
+                "app": {
+                    "current": report["component_id"],
+                    "previous": (state.get("components") or {}).get("app", {}).get("current")
+                    if isinstance((state.get("components") or {}).get("app"), dict)
+                    else (f"desktop-app-{previous}" if previous else None),
+                    "version": report["version"],
+                    "path": str(Path("versions") / report["version"]),
+                },
+                "runtime": runtime_component,
+            },
         }
         _write_state_atomic(state_path, new_state)
-        _prune_versions(versions, set(new_state["history"]))
+        keep_versions = set(new_state["history"])
+        runtime_path = str(runtime_component.get("path") or "").replace("\\", "/")
+        runtime_match = re.fullmatch(r"versions/([^/]+)/resources", runtime_path)
+        if runtime_match and VERSION_RE.fullmatch(runtime_match.group(1)):
+            keep_versions.add(runtime_match.group(1))
+        _prune_versions(versions, keep_versions)
         return {**report, "installed": True, "state": new_state, "target": str(target)}
     except Exception:
         if staging.exists():
@@ -177,6 +198,19 @@ def rollback_update(install_root: str | Path) -> dict[str, Any]:
             "history": [previous, current] if VERSION_RE.fullmatch(current) else [previous],
         }
     )
+    components = new_state.get("components")
+    if isinstance(components, dict) and isinstance(components.get("app"), dict):
+        app_component = dict(components["app"])
+        old_current = app_component.get("current")
+        app_component.update(
+            {
+                "current": app_component.get("previous") or f"desktop-app-{previous}",
+                "previous": old_current,
+                "version": previous,
+                "path": str(Path("versions") / previous),
+            }
+        )
+        new_state["components"] = {**components, "app": app_component}
     _write_state_atomic(root / "update-state.json", new_state)
     return {"rolled_back": True, "state": new_state, "target": str(target)}
 
@@ -184,7 +218,7 @@ def rollback_update(install_root: str | Path) -> dict[str, Any]:
 def load_update_state(install_root: str | Path) -> dict[str, Any]:
     path = Path(install_root).expanduser().resolve() / "update-state.json"
     if not path.is_file():
-        return {"schema_version": 1, "current": None, "previous": None, "history": []}
+        return {"schema_version": 2, "current": None, "previous": None, "history": [], "components": {}}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -192,6 +226,37 @@ def load_update_state(install_root: str | Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise WorkerProtocolError("更新状态文件格式无效")
     return value
+
+
+def _runtime_component(root: Path, state: dict[str, Any], previous: str | None) -> dict[str, Any]:
+    components = state.get("components") if isinstance(state.get("components"), dict) else {}
+    existing = components.get("runtime") if isinstance(components.get("runtime"), dict) else None
+    if existing and existing.get("path"):
+        return dict(existing)
+    versions = []
+    for value in (previous, state.get("current"), *(state.get("history") or [])):
+        if value and VERSION_RE.fullmatch(str(value)) and str(value) not in versions:
+            versions.append(str(value))
+    for version in versions:
+        relative = Path("versions") / version / "resources"
+        candidate = root / relative
+        if _has_python_runtime(candidate):
+            return {
+                "current": f"legacy-{version}",
+                "previous": None,
+                "path": str(relative),
+                "compatibility": "legacy-shared-runtime",
+            }
+    return {"current": None, "previous": None, "path": None, "compatibility": "missing"}
+
+
+def _has_python_runtime(root: Path) -> bool:
+    if (root / "python" / "python.exe").is_file():
+        return True
+    return root.is_dir() and any(
+        item.is_dir() and item.name.startswith("cpython-3.10") and (item / "python.exe").is_file()
+        for item in root.iterdir()
+    )
 
 
 def file_sha256(path: str | Path) -> str:

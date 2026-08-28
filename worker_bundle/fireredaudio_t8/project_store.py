@@ -13,10 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+from .audio_compare import prepare_synchronized_ab
 from .errors import WorkerProtocolError
 
 
-PROJECT_SCHEMA_VERSION = 7
+PROJECT_SCHEMA_VERSION = 8
 PROJECT_SUFFIX = ".firered"
 PROJECT_DIRECTORIES = (
     "assets",
@@ -27,6 +28,7 @@ PROJECT_DIRECTORIES = (
     "renders",
     "cache",
     "logs",
+    "previews",
 )
 
 
@@ -91,6 +93,22 @@ def normalize_project_root(value: str | Path, *, create_suffix: bool = False) ->
     if create_suffix and raw.suffix.lower() != PROJECT_SUFFIX:
         raw = raw.with_name(raw.name + PROJECT_SUFFIX)
     return raw.resolve()
+
+
+def project_root_from_parent(parent: str | Path, name: str) -> Path:
+    """Resolve the desktop UI's parent-directory + project-name input safely.
+
+    A Windows drive root has an empty ``Path.name``.  It therefore must never be
+    passed through ``with_name`` directly.  If the field currently contains an
+    opened ``.firered`` project, a new project is created beside it.
+    """
+    cleaned = _clean_name(name, "")
+    if not cleaned:
+        raise WorkerProtocolError("请填写有效的新项目名称")
+    base = Path(parent).expanduser()
+    if base.suffix.lower() == PROJECT_SUFFIX:
+        base = base.parent
+    return (base / f"{cleaned}{PROJECT_SUFFIX}").resolve()
 
 
 def safe_project_path(root: str | Path, relative: str | Path) -> Path:
@@ -1028,7 +1046,12 @@ class ProjectStore:
         fade_out = max(0.0, float(value.get("fade_out") or 0.0))
         ducking_db = max(-30.0, min(0.0, float(value.get("ducking_db") or 0.0)))
         loop = 1 if value.get("loop") else 0
+        fill_gaps = 1 if value.get("fill_gaps") else 0
         muted = 1 if value.get("muted") else 0
+        if fill_gaps and kind != "room_tone":
+            raise WorkerProtocolError("自动补空隙只适用于 room_tone")
+        if fill_gaps:
+            loop = 1
         if loop and duration <= 0:
             raise WorkerProtocolError("循环制作轨必须填写目标时长")
         now = utc_now()
@@ -1039,18 +1062,19 @@ class ProjectStore:
                 """
                 INSERT INTO production_clips(
                     id,asset_id,kind,position,duration,gain_db,fade_in,fade_out,
-                    ducking_db,loop,muted,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ducking_db,loop,fill_gaps,muted,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     asset_id=excluded.asset_id,kind=excluded.kind,position=excluded.position,
                     duration=excluded.duration,gain_db=excluded.gain_db,
                     fade_in=excluded.fade_in,fade_out=excluded.fade_out,
-                    ducking_db=excluded.ducking_db,loop=excluded.loop,muted=excluded.muted,
+                    ducking_db=excluded.ducking_db,loop=excluded.loop,
+                    fill_gaps=excluded.fill_gaps,muted=excluded.muted,
                     updated_at=excluded.updated_at
                 """,
                 (
                     clip_id, asset_id, kind, position, duration, gain_db, fade_in, fade_out,
-                    ducking_db, loop, muted, now, now,
+                    ducking_db, loop, fill_gaps, muted, now, now,
                 ),
             )
             row = connection.execute("SELECT * FROM production_clips WHERE id=?", (clip_id,)).fetchone()
@@ -1067,6 +1091,7 @@ class ProjectStore:
     def _production_clip_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         value = dict(row)
         value["loop"] = bool(value.get("loop", 0))
+        value["fill_gaps"] = bool(value.get("fill_gaps", 0))
         value["muted"] = bool(value.get("muted", 0))
         try:
             value["path"] = str(self.resolve_asset_path(str(value["asset_id"])))
@@ -1109,6 +1134,7 @@ class ProjectStore:
                     "fade_out": clip["fade_out"],
                     "ducking_db": clip["ducking_db"],
                     "loop": clip["loop"],
+                    "fill_gaps": clip["fill_gaps"],
                     "muted": False,
                 }
             )
@@ -2066,6 +2092,62 @@ class ProjectStore:
             ).fetchall()
         return [_take_dict(row) for row in rows]
 
+    def prepare_take_comparison(
+        self,
+        take_a_id: str,
+        take_b_id: str,
+        *,
+        target_lufs: float = -20.0,
+        sync_onset: bool = True,
+        match_loudness: bool = True,
+    ) -> dict[str, Any]:
+        """Build source-preserving A/B previews for two takes of the same line."""
+        first_id = str(take_a_id or "").strip()
+        second_id = str(take_b_id or "").strip()
+        if not first_id or not second_id:
+            raise WorkerProtocolError("A/B 对比需要两个 take")
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM takes WHERE id IN (?,?)",
+                (first_id, second_id),
+            ).fetchall()
+        by_id = {str(row["id"]): row for row in rows}
+        if first_id not in by_id or second_id not in by_id:
+            raise WorkerProtocolError("A/B 对比 take 不存在")
+        if str(by_id[first_id]["line_id"]) != str(by_id[second_id]["line_id"]):
+            raise WorkerProtocolError("A/B 对比必须来自同一条台词")
+        source_a = safe_project_path(self.root, str(by_id[first_id]["rel_path"]))
+        source_b = safe_project_path(self.root, str(by_id[second_id]["rel_path"]))
+        result = prepare_synchronized_ab(
+            source_a,
+            source_b,
+            safe_project_path(self.root, "previews"),
+            target_lufs=float(target_lufs),
+            sync_onset=bool(sync_onset),
+            match_loudness=bool(match_loudness),
+        )
+        result.update(
+            {
+                "line_id": str(by_id[first_id]["line_id"]),
+                "take_a_id": first_id,
+                "take_b_id": second_id,
+                "take_a": _take_dict(by_id[first_id]),
+                "take_b": _take_dict(by_id[second_id]),
+            }
+        )
+        self._touch(
+            "take_comparison",
+            result["session_id"],
+            "prepared",
+            {
+                "line_id": result["line_id"],
+                "take_a_id": first_id,
+                "take_b_id": second_id,
+                "target_lufs": float(target_lufs),
+            },
+        )
+        return result
+
     def list_project_artifacts(self) -> list[dict[str, Any]]:
         values: list[dict[str, Any]] = []
         with self.connection() as connection:
@@ -2876,6 +2958,7 @@ def _initialize_schema(connection: sqlite3.Connection) -> None:
             fade_out REAL NOT NULL DEFAULT 0,
             ducking_db REAL NOT NULL DEFAULT 0,
             loop INTEGER NOT NULL DEFAULT 0,
+            fill_gaps INTEGER NOT NULL DEFAULT 0,
             muted INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -2974,7 +3057,7 @@ def _ensure_schema_columns(connection: sqlite3.Connection) -> None:
     """Add compatibility columns when opening an older project before bumping its schema."""
     table_columns = {
         table: {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
-        for table in ("script_lines", "renders", "takes")
+        for table in ("script_lines", "renders", "takes", "production_clips")
     }
     for name, declaration in (
         ("archived", "INTEGER NOT NULL DEFAULT 0"),
@@ -2996,6 +3079,10 @@ def _ensure_schema_columns(connection: sqlite3.Connection) -> None:
     ):
         if name not in table_columns["takes"]:
             connection.execute(f"ALTER TABLE takes ADD COLUMN {name} {declaration}")
+    if "fill_gaps" not in table_columns["production_clips"]:
+        connection.execute(
+            "ALTER TABLE production_clips ADD COLUMN fill_gaps INTEGER NOT NULL DEFAULT 0"
+        )
     connection.execute(
         "UPDATE takes SET voice_profile_id=(SELECT voice_profile_id FROM script_lines "
         "WHERE script_lines.id=takes.line_id) WHERE voice_profile_id IS NULL"

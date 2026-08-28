@@ -8,9 +8,10 @@ from typing import Any
 from .errors import WorkerProtocolError
 from .audio_quality import analyze_audio
 from .audio_post import master_audio
+from .delivery_presets import public_export_presets, resolve_export_config
 from .errors import TaskCancelledError
 from .production_quality import analyze_production_audio
-from .project_store import ProjectStore, safe_project_path
+from .project_store import ProjectStore, project_root_from_parent, safe_project_path
 from .script_parser import parse_script, parse_script_file
 from .timeline import render_timeline, render_track_stems
 from .long_audio import render_srt, render_vtt
@@ -21,8 +22,12 @@ def handle_project_request(
 ) -> dict[str, Any]:
     path = route.rstrip("/")
     if path == "/v1/project/create":
+        project_root = _required(payload, "project_root")
+        project_name = str(payload.get("name") or "") or None
+        if bool(payload.get("create_under_parent", False)):
+            project_root = project_root_from_parent(project_root, project_name or "")
         store = ProjectStore.create(
-            _required(payload, "project_root"), str(payload.get("name") or "") or None
+            project_root, project_name
         )
         return store.snapshot()
     store = ProjectStore(_required(payload, "project_root"))
@@ -64,6 +69,9 @@ def handle_project_request(
                 default_speaker=str(payload.get("default_speaker") or "旁白"),
             )
         result = parsed.to_dict()
+        for issue in result["issues"]:
+            if issue.get("code") == "unknown_speaker":
+                issue["severity"] = "warning"
         blocking_issues = [
             issue
             for issue in result["issues"]
@@ -296,6 +304,17 @@ def handle_project_request(
             ),
             "project": store.snapshot(),
         }
+    if path == "/v1/project/takes/prepare-ab":
+        return {
+            "comparison": store.prepare_take_comparison(
+                _required(payload, "take_a_id"),
+                _required(payload, "take_b_id"),
+                target_lufs=float(payload.get("target_lufs", -20.0)),
+                sync_onset=bool(payload.get("sync_onset", True)),
+                match_loudness=bool(payload.get("match_loudness", True)),
+            ),
+            "project": store.snapshot(),
+        }
     if path == "/v1/project/artifacts/list":
         return {"artifacts": store.list_project_artifacts(), "project": store.snapshot()}
     if path == "/v1/project/transcripts/asr":
@@ -413,8 +432,23 @@ def handle_project_request(
     if path == "/v1/project/production/list":
         return {"clips": store.list_production_clips(), "project": store.snapshot()}
     if path == "/v1/project/production/upsert":
+        clip = _mapping(payload.get("clip"))
+        if bool(clip.get("fill_gaps")) and float(clip.get("duration") or 0.0) <= 0:
+            inputs = store.timeline_render_inputs()
+            sequence_duration = sum(float(value.get("duration") or 0.0) for value in inputs)
+            timeline_duration = max(
+                (
+                    float(value.get("position") or 0.0)
+                    + float(value.get("duration") or 0.0)
+                    for value in inputs
+                ),
+                default=0.0,
+            )
+            clip["duration"] = max(sequence_duration, timeline_duration)
+            if float(clip["duration"]) <= 0:
+                raise WorkerProtocolError("自动补空隙前需要至少一个有时长的对白片段")
         return {
-            "clip": store.upsert_production_clip(_mapping(payload.get("clip"))),
+            "clip": store.upsert_production_clip(clip),
             "project": store.snapshot(),
         }
     if path == "/v1/project/production/delete":
@@ -470,6 +504,8 @@ def handle_project_request(
         return {"markers": imported, "count": len(imported), "project": store.snapshot()}
     if path == "/v1/project/exchange/export":
         return _export_project_exchange(store)
+    if path == "/v1/project/export-presets":
+        return {"presets": public_export_presets(), "project": store.snapshot()}
     if path == "/v1/project/timeline/render":
         clips = payload.get("clips")
         dialogue_inputs = clips if isinstance(clips, list) else store.timeline_render_inputs()
@@ -498,40 +534,39 @@ def handle_project_request(
             payload.get("output_rel_path") or f"renders/{prefix}-render-{stamp}.wav"
         )
         output = safe_project_path(store.root, relative_output)
-        strategy = str(payload.get("strategy") or "timeline")
+        export_config = resolve_export_config(payload)
+        strategy = str(export_config["strategy"])
         result = render_timeline(
             render_inputs,
             output,
             strategy=strategy,
             allow_overlap=bool(payload.get("allow_overlap", False)),
+            crossfade_seconds=float(export_config["crossfade_seconds"]),
         )
         mastering = None
-        if bool(payload.get("normalize_loudness", False)):
+        if bool(export_config["normalize_loudness"]):
             mastering = master_audio(
                 output,
                 output,
-                target_lufs=float(payload.get("target_lufs", -16.0)),
-                loudness_range_lu=float(payload.get("loudness_range_lu", 11.0)),
-                true_peak_dbfs=float(payload.get("true_peak_ceiling_dbfs", -1.0)),
-                highpass_hz=(
-                    None
-                    if payload.get("highpass_hz") in (None, "", 0, 0.0)
-                    else float(payload["highpass_hz"])
-                ),
+                target_lufs=float(export_config["target_lufs"]),
+                loudness_range_lu=float(export_config["loudness_range_lu"]),
+                true_peak_dbfs=float(export_config["true_peak_ceiling_dbfs"]),
+                highpass_hz=export_config["highpass_hz"],
             )
         quality_report = analyze_production_audio(
             output,
-            target_lufs=float(payload.get("target_lufs", -16.0)),
+            target_lufs=float(export_config["target_lufs"]),
             tolerance_lu=float(payload.get("tolerance_lu", 2.0)),
-            true_peak_ceiling_dbfs=float(payload.get("true_peak_ceiling_dbfs", -1.0)),
+            true_peak_ceiling_dbfs=float(export_config["true_peak_ceiling_dbfs"]),
         )
         stems = {}
-        if bool(payload.get("render_stems", False)):
+        if bool(export_config["render_stems"]):
             stem_results = render_track_stems(
                 render_inputs,
                 safe_project_path(store.root, f"renders/stems-{stamp}"),
                 strategy=strategy,
                 allow_overlap=bool(payload.get("allow_overlap", False)),
+                crossfade_seconds=float(export_config["crossfade_seconds"]),
             )
             stems = {key: value.to_dict() for key, value in stem_results.items()}
         subtitles = _render_project_subtitles(
@@ -549,6 +584,7 @@ def handle_project_request(
             "quality_report": quality_report,
             "mastering": mastering,
             "production_clips": production_inputs,
+            "export_config": export_config,
         }
         temporary = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
         temporary.write_text(
@@ -571,6 +607,7 @@ def handle_project_request(
             "quality_report": quality_report,
             "mastering": mastering,
             "production_clips": production_inputs,
+            "export_config": export_config,
             "manifest_path": str(manifest_path),
             "record": recorded,
             "project": store.snapshot(),

@@ -617,7 +617,7 @@ def _build_subgraph(spec: SubgraphSpec) -> Path:
             "proxyWidgets": proxy_widgets,
             "t8_firered_proxy_constraints": proxy_constraints,
             "cnr_id": "comfyui-fireredaudio-t8",
-            "ver": "0.17.0",
+            "ver": "0.18.0",
         },
         "widgets_values": [],
         "title": spec.title,

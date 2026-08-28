@@ -20,6 +20,10 @@ SPEAKER_PREFIX = re.compile(
     r"^\s*(?:\[([^\]]+)\]|<v\s+([^>]+)>|([^:\n：]{1,80})[:：])\s*(.*)$",
     re.IGNORECASE | re.DOTALL,
 )
+SCENE_HEADING = re.compile(
+    r"^\s*(?:【(?P<bracket>[^】]{1,80})】|\[(?:场景|scene)\s*[:：]\s*(?P<tag>[^\]]{1,80})\]|(?:场景|scene)\s*[:：]\s*(?P<label>.{1,80}))\s*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -234,15 +238,21 @@ def _parse_json(text: str, default_speaker: str) -> tuple[list[dict[str, Any]], 
 
 def _parse_text(text: str, default_speaker: str) -> tuple[list[dict[str, Any]], list[ScriptIssue]]:
     lines: list[dict[str, Any]] = []
+    current_scene = ""
     for raw in text.split("\n"):
         body = raw.strip()
         if not body:
+            continue
+        scene_match = SCENE_HEADING.match(body)
+        if scene_match:
+            current_scene = next((value for value in scene_match.groupdict().values() if value), "").strip()
             continue
         speaker, body = _extract_speaker(body, default_speaker)
         lines.append(
             {
                 "id": str(uuid.uuid4()),
                 "order_index": len(lines),
+                "scene": current_scene,
                 "speaker": speaker,
                 "text": body,
                 "target_start": None,
@@ -262,6 +272,7 @@ def _validate_lines(
     issues: list[ScriptIssue] = []
     ids: set[str] = set()
     speakers: set[str] = set()
+    unknown_speakers: dict[str, int] = {}
     previous_start: float | None = None
     previous_end: float | None = None
     for index, line in enumerate(lines):
@@ -276,9 +287,7 @@ def _validate_lines(
         line["speaker"] = speaker
         speakers.add(speaker)
         if known_speakers is not None and speaker not in known_speakers:
-            issues.append(
-                ScriptIssue("error", "unknown_speaker", f"角色未映射：{speaker}", index)
-            )
+            unknown_speakers.setdefault(speaker, index)
         start = _optional_float(line.get("target_start"))
         end = _optional_float(line.get("target_end"))
         if start is not None and end is not None:
@@ -289,6 +298,8 @@ def _validate_lines(
             if previous_end is not None and start < previous_end:
                 issues.append(ScriptIssue("warning", "overlap", "与上一条台词时间重叠", index))
             previous_start, previous_end = start, end
+    for speaker, first_index in unknown_speakers.items():
+        issues.append(ScriptIssue("error", "unknown_speaker", f"角色未映射：{speaker}", first_index))
     if len(speakers) > 8:
         issues.append(ScriptIssue("error", "too_many_speakers", f"角色数 {len(speakers)} 超过上限 8"))
     return issues

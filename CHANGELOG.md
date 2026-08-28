@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.0
+
+- 默认模型下载源切换到 `t8star/Firered-Audio-Comfy`，与桌面整合包共用同一份已完成全量 SHA-256 验收的 Lite/Full 权重。
+- 下载器固定 Hugging Face immutable revision，自动模式改为 Hugging Face 优先、上游 ModelScope 备用；继续支持断点续传、磁盘预检和可选完整哈希。
+- README、包元数据和模型加载说明新增明确模型地址、桌面/ComfyUI 共用目录布局与 Full/Lite 能力边界。
+- 隔离 Python 3.10 / Torch 2.8 cu128 / Transformers 5.8 运行时边界保持不变，不修改 ComfyUI 宿主依赖。
+
 ## 0.17.0
 
 - 字幕时长适配新增内部停顿保护：检测到不短于阈值的表演停顿时，只对语音片段使用 `atempo`，停顿保持原长；独立自然语速上限默认 1.12，超过后明确进入重新生成，不再用更激进的整句压缩换取时间槽通过。
