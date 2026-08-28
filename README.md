@@ -49,7 +49,7 @@ FireRedAudio 的 45 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成�
 
 ## 安装
 
-在 ComfyUI-Manager 中搜索 `comfyui-fireredaudio-T8` 并安装，然后重启 ComfyUI。也可以手动安装：
+节点已提交 Comfy Registry 审核；审核通过后可在 ComfyUI-Manager 中搜索 `comfyui-fireredaudio-T8` 安装。若暂时搜索不到，请使用下面的 GitHub 手动安装方式：
 
 ```powershell
 cd ComfyUI/custom_nodes
