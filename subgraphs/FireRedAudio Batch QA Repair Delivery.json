@@ -121,8 +121,33 @@
             "value"
           ]
         ],
+        "t8_firered_proxy_constraints": [
+          null,
+          {
+            "min": 1,
+            "max": 32,
+            "step": 1,
+            "integer": true,
+            "label": "每批条数"
+          },
+          {
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01,
+            "integer": false,
+            "label": "最大 CER/WER"
+          },
+          {
+            "min": 1,
+            "max": 5,
+            "step": 1,
+            "integer": true,
+            "label": "最多返修次数"
+          },
+          null
+        ],
         "cnr_id": "comfyui-fireredaudio-t8",
-        "ver": "0.16.0"
+        "ver": "0.17.0"
       },
       "widgets_values": [],
       "title": "FireRedAudio · 批量 QA 返修交付"
@@ -729,7 +754,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveInt"
+              "Node name for S&R": "PrimitiveInt",
+              "t8_firered_constraint": {
+                "min": 1,
+                "max": 32,
+                "step": 1,
+                "integer": true,
+                "label": "每批条数"
+              }
             },
             "widgets_values": [
               8,
@@ -774,7 +806,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveFloat"
+              "Node name for S&R": "PrimitiveFloat",
+              "t8_firered_constraint": {
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.01,
+                "integer": false,
+                "label": "最大 CER/WER"
+              }
             },
             "widgets_values": [
               0.2
@@ -818,7 +857,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveInt"
+              "Node name for S&R": "PrimitiveInt",
+              "t8_firered_constraint": {
+                "min": 1,
+                "max": 5,
+                "step": 1,
+                "integer": true,
+                "label": "最多返修次数"
+              }
             },
             "widgets_values": [
               2,

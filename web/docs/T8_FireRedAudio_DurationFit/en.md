@@ -5,9 +5,9 @@ Fits generated speech into SRT cue windows while preserving natural delivery whe
 ## How to use
 
 1. Default `speech_aware` detects and removes excess boundary silence first.
-2. Pitch-preserving `atempo` is used only for residual overrun; internal pauses are preserved.
-3. If the residual tempo exceeds the safety limit, the line is sent for regeneration instead of truncation.
+2. For residual overrun, only speech spans are accelerated while qualifying performance pauses keep their original duration.
+3. If the required speech tempo exceeds the independent natural-speed limit, the line is sent for regeneration.
 
 ## Important
 
-The report separates raw tempo, boundary trims, and residual tempo. Source files are always preserved.
+The report lists protected pauses, speech duration, and actual tempo. Source files are preserved and final naturalness still requires listening.

@@ -82,6 +82,28 @@ def write_stereo_tone(path: Path, *, seconds: float = 0.1, sample_rate: int = 24
 
 
 class ProductionWorkflowTests(unittest.TestCase):
+    def test_acoustic_signature_rejects_exact_copy_and_detects_spectral_change(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            first = root / "first.wav"
+            copied = root / "copied.wav"
+            different = root / "different.wav"
+            write_tone(first, seconds=0.5, frequency=440.0)
+            shutil.copy2(first, copied)
+            write_tone(different, seconds=0.5, frequency=880.0)
+            first_signature = PRODUCTION.wav_acoustic_signature(first)
+            copied_signature = PRODUCTION.wav_acoustic_signature(copied)
+            different_signature = PRODUCTION.wav_acoustic_signature(different)
+            exact = PRODUCTION.acoustic_signature_distance(
+                first_signature, copied_signature
+            )
+            changed = PRODUCTION.acoustic_signature_distance(
+                first_signature, different_signature
+            )
+            self.assertEqual(exact["score"], 0.0)
+            self.assertGreater(changed["spectrum_distance"], 0.05)
+            self.assertGreater(changed["score"], 0.01)
+
     def test_desktop_project_exchange_loads_voice_plan_and_adopted_take(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             project = Path(raw) / "demo.firered"

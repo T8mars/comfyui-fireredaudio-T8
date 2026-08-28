@@ -411,7 +411,7 @@
       ],
       "size": [
         470,
-        450
+        500
       ],
       "flags": {},
       "order": 8,
@@ -461,11 +461,13 @@
         1.15,
         false,
         0.9,
-        "v016-review-fit",
+        "v017-review-fit",
         "fireredaudio/duration-fit",
         -40.0,
         0.05,
-        0.12
+        0.12,
+        0.18,
+        1.12
       ]
     },
     {

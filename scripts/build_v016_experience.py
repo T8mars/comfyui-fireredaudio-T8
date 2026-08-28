@@ -34,6 +34,9 @@ class WidgetPort:
     kind: str
     label: str
     default: Any = None
+    minimum: float | int | None = None
+    maximum: float | int | None = None
+    step: float | int | None = None
 
 
 @dataclass(frozen=True)
@@ -170,9 +173,9 @@ SUBGRAPHS = (
         (9, 10, 11, 13),
         (
             WidgetPort(9, "project_name", "STRING", "批量项目名", "creator-loop"),
-            WidgetPort(9, "batch_size", "INT", "每批条数", 8),
-            WidgetPort(10, "max_text_error_rate", "FLOAT", "最大 CER/WER", 0.2),
-            WidgetPort(11, "max_attempts", "INT", "最多返修次数", 2),
+            WidgetPort(9, "batch_size", "INT", "每批条数", 8, 1, 32, 1),
+            WidgetPort(10, "max_text_error_rate", "FLOAT", "最大 CER/WER", 0.2, 0.0, 1.0, 0.01),
+            WidgetPort(11, "max_attempts", "INT", "最多返修次数", 2, 1, 5, 1),
             WidgetPort(13, "audio_format", "COMBO", "交付格式", "wav"),
             WidgetPort(13, "create_zip", "BOOLEAN", "生成 ZIP", True),
         ),
@@ -192,10 +195,10 @@ SUBGRAPHS = (
         (
             WidgetPort(6, "replacement_dictionary_json", "STRING", "朗读替换词典 JSON", '{"API":"A P I"}'),
             WidgetPort(8, "project_name", "STRING", "项目名", "v014-review-demo"),
-            WidgetPort(8, "batch_size", "INT", "每批条数", 8),
+            WidgetPort(8, "batch_size", "INT", "每批条数", 8, 1, 32, 1),
             WidgetPort(9, "strategy", "COMBO", "时长适配策略", "speech_aware"),
-            WidgetPort(9, "maximum_speed", "FLOAT", "最大安全加速倍率", 1.15),
-            WidgetPort(10, "max_text_error_rate", "FLOAT", "最大 CER/WER", 0.2),
+            WidgetPort(9, "maximum_speed", "FLOAT", "最大安全加速倍率", 1.15, 1.0, 2.0, 0.01),
+            WidgetPort(10, "max_text_error_rate", "FLOAT", "最大 CER/WER", 0.2, 0.0, 1.0, 0.01),
         ),
         (
             OutputPort(9, 0, "audio_batch", "T8_FIREREDAUDIO_AUDIO_BATCH", "时长适配批次"),
@@ -213,12 +216,12 @@ SUBGRAPHS = (
         (4, 5, 6),
         (
             WidgetPort(4, "range_mode", "COMBO", "范围来源", "manual"),
-            WidgetPort(4, "start_seconds", "FLOAT", "开始时间（秒）", 2.0),
-            WidgetPort(4, "end_seconds", "FLOAT", "结束时间（秒）", 5.0),
-            WidgetPort(4, "context_ms", "INT", "上下文（毫秒）", 250),
+            WidgetPort(4, "start_seconds", "FLOAT", "开始时间（秒）", 2.0, 0.0, 86400.0, 0.01),
+            WidgetPort(4, "end_seconds", "FLOAT", "结束时间（秒）", 5.0, 0.01, 86400.0, 0.01),
+            WidgetPort(4, "context_ms", "INT", "上下文（毫秒）", 250, 0, 5000, 1),
             WidgetPort(5, "instruction", "STRING", "编辑指令", "replace the last sentence with: 这是一段已经修复的台词"),
             WidgetPort(5, "edit_type", "COMBO", "编辑类型", "semantic"),
-            WidgetPort(6, "crossfade_ms", "INT", "回填交叉淡化（毫秒）", 40),
+            WidgetPort(6, "crossfade_ms", "INT", "回填交叉淡化（毫秒）", 40, 0, 2000, 1),
         ),
         (
             OutputPort(6, 0, "original_audio", "AUDIO", "原始音频"),
@@ -233,12 +236,12 @@ SUBGRAPHS = (
         "FireRedAudio · 单句创意候选与采用",
         (9, 10, 11),
         (
-            WidgetPort(9, "candidate_count", "INT", "新候选数量", 3),
-            WidgetPort(9, "seed_start", "INT", "起始 Seed", 1001),
-            WidgetPort(9, "seed_step", "INT", "Seed 间隔", 97),
+            WidgetPort(9, "candidate_count", "INT", "新候选数量", 3, 2, 7, 1),
+            WidgetPort(9, "seed_start", "INT", "起始 Seed", 1001, 0, 0xFFFFFFFF - 700000, 1),
+            WidgetPort(9, "seed_step", "INT", "Seed 间隔", 97, 1, 100000, 1),
             WidgetPort(9, "include_original", "BOOLEAN", "把原 Take 加入盲听", True),
             WidgetPort(9, "run_asr_qa", "BOOLEAN", "逐个 ASR 回读", False),
-            WidgetPort(10, "selected_position", "INT", "采用候选序号", 1),
+            WidgetPort(10, "selected_position", "INT", "采用候选序号（0=仅盲听）", 0, 0, 8, 1),
             WidgetPort(10, "ratings_json", "STRING", "评分 JSON", "{}"),
             WidgetPort(10, "notes_json", "STRING", "备注 JSON", "{}"),
         ),
@@ -375,6 +378,7 @@ def _build_subgraph(spec: SubgraphSpec) -> Path:
     subgraph_inputs: list[dict[str, Any]] = []
     top_inputs: list[dict[str, Any]] = []
     proxy_widgets: list[list[str]] = []
+    proxy_constraints: list[dict[str, Any] | None] = []
     grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
     for link in incoming:
         grouped.setdefault((link["origin_id"], link["origin_slot"]), []).append(link)
@@ -498,6 +502,19 @@ def _build_subgraph(spec: SubgraphSpec) -> Path:
         primitive_values = (
             [widget.default, "fixed"] if widget.kind == "INT" else [widget.default]
         )
+        properties: dict[str, Any] = {"Node name for S&R": primitive_type}
+        proxy_constraint: dict[str, Any] | None = None
+        if widget.kind in {"INT", "FLOAT"} and (
+            widget.minimum is not None or widget.maximum is not None
+        ):
+            proxy_constraint = {
+                "min": widget.minimum,
+                "max": widget.maximum,
+                "step": widget.step,
+                "integer": widget.kind == "INT",
+                "label": widget.label,
+            }
+            properties["t8_firered_constraint"] = proxy_constraint
         primitive = {
             "id": primitive_id,
             "type": primitive_type,
@@ -524,7 +541,7 @@ def _build_subgraph(spec: SubgraphSpec) -> Path:
                     "links": [link_id],
                 }
             ],
-            "properties": {"Node name for S&R": primitive_type},
+            "properties": properties,
             "widgets_values": primitive_values,
             "title": widget.label,
         }
@@ -541,6 +558,7 @@ def _build_subgraph(spec: SubgraphSpec) -> Path:
             }
         )
         proxy_widgets.append([str(primitive_id), "value"])
+        proxy_constraints.append(proxy_constraint)
 
     subgraph_outputs: list[dict[str, Any]] = []
     top_outputs: list[dict[str, Any]] = []
@@ -597,8 +615,9 @@ def _build_subgraph(spec: SubgraphSpec) -> Path:
         "outputs": top_outputs,
         "properties": {
             "proxyWidgets": proxy_widgets,
+            "t8_firered_proxy_constraints": proxy_constraints,
             "cnr_id": "comfyui-fireredaudio-t8",
-            "ver": "0.16.0",
+            "ver": "0.17.0",
         },
         "widgets_values": [],
         "title": spec.title,
@@ -657,12 +676,12 @@ def build(*, thumbnails: bool = True) -> dict[str, Any]:
         "app_mode_templates": [spec.output_name for spec in TEMPLATES if spec.app_mode],
         "graph_templates": [spec.output_name for spec in TEMPLATES if not spec.app_mode],
     }
-    _write_json(ROOT / "scripts" / "v016-experience-manifest.json", report)
+    _write_json(ROOT / "scripts" / "v017-experience-manifest.json", report)
     return report
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build FireRedAudio v0.16 ComfyUI templates and subgraphs")
+    parser = argparse.ArgumentParser(description="Build FireRedAudio v0.17 ComfyUI templates and subgraphs")
     parser.add_argument("--no-thumbnails", action="store_true")
     args = parser.parse_args()
     print(json.dumps(build(thumbnails=not args.no_thumbnails), ensure_ascii=False, indent=2))

@@ -217,6 +217,38 @@ def load_audio_batch_from_manifest(
                 raise ValueError(f"Manifest 音频哈希不一致：{line_id}")
         items.append(item)
     batch = AudioBatch(str(target), tuple(items))
+    approved_ids: list[str] = []
+    retry_ids: list[str] = []
+    pending_review_ids: list[str] = []
+    adopted_ids: list[str] = []
+    for item in items:
+        line_id = str(item.get("line_id") or "")
+        review = item.get("human_review")
+        if not isinstance(review, dict):
+            if item.get("status") == "complete":
+                pending_review_ids.append(line_id)
+            continue
+        decision = str(review.get("effective_decision") or "").casefold()
+        if review.get("adopted") is True:
+            adopted_ids.append(line_id)
+            approved_ids.append(line_id)
+        elif decision == "approve":
+            approved_ids.append(line_id)
+        elif decision == "retry":
+            retry_ids.append(line_id)
+        else:
+            pending_review_ids.append(line_id)
+    export_ready = bool(items) and not missing and all(
+        item.get("status") == "complete" for item in items
+    ) and len(approved_ids) == len(items)
+    if missing:
+        next_action = "修复缺失文件或恢复正确的 Manifest"
+    elif retry_ids:
+        next_action = "把重做 line ID 送入定向返修"
+    elif pending_review_ids:
+        next_action = "继续逐句试听并明确通过/采用"
+    else:
+        next_action = "已满足导出条件，可连接批量保存/下载"
     report = {
         "manifest_path": str(target),
         "kind": payload.get("kind") or "batch",
@@ -225,6 +257,12 @@ def load_audio_batch_from_manifest(
         "missing": missing,
         "hash_mismatches": hash_mismatches,
         "reviewed": sum(isinstance(item.get("human_review"), dict) for item in items),
+        "approved_line_ids": approved_ids,
+        "retry_line_ids": retry_ids,
+        "pending_review_line_ids": pending_review_ids,
+        "adopted_line_ids": adopted_ids,
+        "export_ready": export_ready,
+        "next_action": next_action,
     }
     return batch, report
 
@@ -355,6 +393,8 @@ def fit_audio_batch_to_cues(
     edge_silence_threshold_db: float = -40.0,
     edge_silence_min_seconds: float = 0.05,
     edge_padding_seconds: float = 0.12,
+    internal_pause_min_seconds: float = 0.18,
+    maximum_speech_speed: float = 1.12,
 ) -> tuple[AudioBatch, dict[str, Any]]:
     if not isinstance(audio_batch, AudioBatch):
         raise TypeError("字幕时长适配必须连接 AudioBatch")
@@ -370,6 +410,10 @@ def fit_audio_batch_to_cues(
         raise ValueError("首尾静音最短时长必须在 0.01–2.0 秒")
     if not 0.0 <= float(edge_padding_seconds) <= 2.0:
         raise ValueError("保留首尾缓冲必须在 0–2.0 秒")
+    if not 0.05 <= float(internal_pause_min_seconds) <= 2.0:
+        raise ValueError("内部停顿保护阈值必须在 0.05–2.0 秒")
+    if not 1.0 <= float(maximum_speech_speed) <= 2.0:
+        raise ValueError("自然语速上限必须在 1.0–2.0")
     target_root = Path(output_dir).resolve()
     target_root.mkdir(parents=True, exist_ok=True)
     fitted: list[dict[str, Any]] = []
@@ -436,6 +480,27 @@ def fit_audio_batch_to_cues(
                 trimmed_duration = max(0.0, duration - trim_leading - trim_trailing)
                 residual_overrun = max(0.0, trimmed_duration - slot)
                 residual_tempo = trimmed_duration / slot
+                protected_pauses = _protected_internal_pause_intervals(
+                    silence.get("intervals") or [],
+                    trim_start_seconds=trim_leading,
+                    trim_end_seconds=trim_trailing,
+                    source_duration_seconds=duration,
+                    minimum_seconds=float(internal_pause_min_seconds),
+                )
+                protected_pause_seconds = sum(
+                    float(interval["duration_seconds"]) for interval in protected_pauses
+                )
+                speech_seconds = max(0.0, trimmed_duration - protected_pause_seconds)
+                target_speech_seconds = slot - protected_pause_seconds
+                speech_tempo = (
+                    speech_seconds / target_speech_seconds
+                    if residual_overrun > float(tolerance_seconds)
+                    and target_speech_seconds > 0.0
+                    else 1.0
+                )
+                effective_speed_limit = min(
+                    float(maximum_speed), float(maximum_speech_speed)
+                )
                 row.update(
                     boundary_silence=silence,
                     edge_padding_seconds=padding,
@@ -446,11 +511,27 @@ def fit_audio_batch_to_cues(
                     estimated_post_trim_seconds=trimmed_duration,
                     residual_overrun_seconds=residual_overrun,
                     residual_tempo=residual_tempo,
+                    protected_internal_pauses=protected_pauses,
+                    protected_pause_seconds=protected_pause_seconds,
+                    speech_seconds=speech_seconds,
+                    target_speech_seconds=target_speech_seconds,
+                    speech_tempo=speech_tempo,
+                    maximum_speech_speed=float(maximum_speech_speed),
+                    effective_speed_limit=effective_speed_limit,
                 )
-                if residual_overrun > float(tolerance_seconds) and residual_tempo > float(maximum_speed):
+                if residual_overrun > float(tolerance_seconds) and target_speech_seconds <= 0.0:
                     row.update(
                         action="regenerate",
-                        reason="裁掉首尾多余静音后，所需加速仍超过安全上限",
+                        reason="受保护的内部停顿已经占满字幕时间槽，不能安全压缩语音",
+                    )
+                    retry_ids.append(line_id)
+                elif residual_overrun > float(tolerance_seconds) and speech_tempo > effective_speed_limit:
+                    row.update(
+                        action="regenerate",
+                        reason=(
+                            "保留内部停顿后，所需语音加速超过自然语速上限；"
+                            "请缩短文本、扩大时间槽或重新生成"
+                        ),
                     )
                     retry_ids.append(line_id)
                 else:
@@ -462,33 +543,48 @@ def fit_audio_batch_to_cues(
                         + ".wav"
                     )
                     effective_tempo = (
-                        residual_tempo
+                        speech_tempo
                         if residual_overrun > float(tolerance_seconds)
                         else 1.0
                     )
-                    _trim_and_time_stretch_wav(
-                        source_path,
-                        target,
-                        trim_start_seconds=trim_leading,
-                        trim_end_seconds=trim_trailing,
-                        source_duration_seconds=duration,
-                        tempo=effective_tempo,
-                    )
+                    if protected_pauses and abs(effective_tempo - 1.0) > 1e-6:
+                        _pause_protected_time_stretch_wav(
+                            source_path,
+                            target,
+                            trim_start_seconds=trim_leading,
+                            trim_end_seconds=trim_trailing,
+                            source_duration_seconds=duration,
+                            protected_pauses=protected_pauses,
+                            speech_tempo=effective_tempo,
+                        )
+                    else:
+                        _trim_and_time_stretch_wav(
+                            source_path,
+                            target,
+                            trim_start_seconds=trim_leading,
+                            trim_end_seconds=trim_trailing,
+                            source_duration_seconds=duration,
+                            tempo=effective_tempo,
+                        )
                     output_metrics = wav_metrics(target)
                     output_duration = float(output_metrics["duration_seconds"])
-                    action = (
-                        "silence_trimmed_and_time_stretched"
-                        if abs(effective_tempo - 1.0) > 1e-6
-                        else "silence_trimmed"
-                    )
+                    if protected_pauses and abs(effective_tempo - 1.0) > 1e-6:
+                        action = "pause_protected_time_stretched"
+                    elif abs(effective_tempo - 1.0) > 1e-6:
+                        action = "silence_trimmed_and_time_stretched"
+                    else:
+                        action = "silence_trimmed"
                     item["duration_fit"] = {
                         "source_output_path": str(source_path.resolve()),
                         "source_sha256": file_digest(source_path),
                         "method": "speech_aware",
                         "raw_required_tempo": required_rate,
                         "tempo": effective_tempo,
+                        "speech_tempo": effective_tempo,
                         "trim_leading_seconds": trim_leading,
                         "trim_trailing_seconds": trim_trailing,
+                        "protected_internal_pauses": protected_pauses,
+                        "protected_pause_seconds": protected_pause_seconds,
                         "slot_seconds": slot,
                         "source_duration_seconds": duration,
                         "output_duration_seconds": output_duration,
@@ -553,6 +649,8 @@ def fit_audio_batch_to_cues(
         "edge_silence_threshold_db": float(edge_silence_threshold_db),
         "edge_silence_min_seconds": float(edge_silence_min_seconds),
         "edge_padding_seconds": float(edge_padding_seconds),
+        "internal_pause_min_seconds": float(internal_pause_min_seconds),
+        "maximum_speech_speed": float(maximum_speech_speed),
         "total": len(fitted),
         "adapted_count": len(adapted_ids),
         "retry_count": len(retry_ids),
@@ -721,6 +819,8 @@ def _boundary_silence_seconds(
             intervals.append((current_start, float(event.group(2))))
             current_start = None
     duration = max(0.0, float(duration_seconds))
+    if current_start is not None and current_start < duration:
+        intervals.append((current_start, duration))
     leading = 0.0
     trailing = 0.0
     if intervals and intervals[0][0] <= 0.01:
@@ -733,7 +833,51 @@ def _boundary_silence_seconds(
         "leading_seconds": leading,
         "trailing_seconds": trailing,
         "interval_count": len(intervals),
+        "intervals": [
+            {
+                "start_seconds": max(0.0, start),
+                "end_seconds": min(duration, end),
+                "duration_seconds": max(0.0, min(duration, end) - max(0.0, start)),
+            }
+            for start, end in intervals
+            if end > start
+        ],
     }
+
+
+def _protected_internal_pause_intervals(
+    intervals: list[dict[str, Any]],
+    *,
+    trim_start_seconds: float,
+    trim_end_seconds: float,
+    source_duration_seconds: float,
+    minimum_seconds: float,
+) -> list[dict[str, float]]:
+    """Return intentional internal pauses that must not be shortened by atempo."""
+    content_start = max(0.0, float(trim_start_seconds))
+    content_end = max(
+        content_start,
+        float(source_duration_seconds) - max(0.0, float(trim_end_seconds)),
+    )
+    protected: list[dict[str, float]] = []
+    for raw in intervals:
+        start = max(content_start, float(raw.get("start_seconds") or 0.0))
+        end = min(content_end, float(raw.get("end_seconds") or 0.0))
+        duration = max(0.0, end - start)
+        # Boundary silence is handled by the edge trim/padding policy.  Only
+        # fully internal gaps qualify as performance pauses.
+        if start <= content_start + 0.01 or end >= content_end - 0.01:
+            continue
+        if duration + 1e-9 < float(minimum_seconds):
+            continue
+        protected.append(
+            {
+                "start_seconds": start,
+                "end_seconds": end,
+                "duration_seconds": duration,
+            }
+        )
+    return protected
 
 
 def _trim_and_time_stretch_wav(
@@ -781,6 +925,90 @@ def _trim_and_time_stretch_wav(
         temporary.unlink(missing_ok=True)
         detail = (completed.stderr or completed.stdout or "FFmpeg 未产生输出").strip()
         raise RuntimeError(f"语音感知时长适配失败：{detail[-1000:]}")
+    temporary.replace(target)
+
+
+def _pause_protected_time_stretch_wav(
+    source: Path,
+    target: Path,
+    *,
+    trim_start_seconds: float,
+    trim_end_seconds: float,
+    source_duration_seconds: float,
+    protected_pauses: list[dict[str, float]],
+    speech_tempo: float,
+) -> None:
+    """Stretch speech spans while concatenating detected internal pauses unchanged."""
+    if not 1.0 <= float(speech_tempo) <= 2.0:
+        raise ValueError("停顿保护时的语音加速倍率必须在 1.0–2.0")
+    content_start = max(0.0, float(trim_start_seconds))
+    content_end = max(
+        content_start + 0.001,
+        float(source_duration_seconds) - max(0.0, float(trim_end_seconds)),
+    )
+    spans: list[tuple[str, float, float]] = []
+    cursor = content_start
+    for pause in protected_pauses:
+        start = max(cursor, float(pause["start_seconds"]))
+        end = min(content_end, float(pause["end_seconds"]))
+        if start > cursor + 0.001:
+            spans.append(("speech", cursor, start))
+        if end > start + 0.001:
+            spans.append(("pause", start, end))
+        cursor = max(cursor, end)
+    if content_end > cursor + 0.001:
+        spans.append(("speech", cursor, content_end))
+    if not spans:
+        raise RuntimeError("停顿保护没有得到可处理的音频片段")
+
+    split_labels = "".join(f"[a{index}]" for index in range(len(spans)))
+    filters = [f"[0:a]asplit={len(spans)}{split_labels}"]
+    output_labels: list[str] = []
+    for index, (kind, start, end) in enumerate(spans):
+        output_label = f"s{index}"
+        chain = (
+            f"[a{index}]atrim=start={start:.10f}:end={end:.10f},"
+            "asetpts=PTS-STARTPTS"
+        )
+        if kind == "speech" and abs(float(speech_tempo) - 1.0) > 1e-6:
+            chain += f",atempo={float(speech_tempo):.10f}"
+        filters.append(f"{chain}[{output_label}]")
+        output_labels.append(f"[{output_label}]")
+    filters.append(
+        "".join(output_labels) + f"concat=n={len(output_labels)}:v=0:a=1[outa]"
+    )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.stem + ".tmp.wav")
+    command = [
+        _ffmpeg_path(),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source),
+        "-filter_complex",
+        ";".join(filters),
+        "-map",
+        "[outa]",
+        "-c:a",
+        "pcm_s16le",
+        str(temporary),
+    ]
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        creationflags=creationflags,
+        check=False,
+    )
+    if completed.returncode != 0 or not temporary.is_file():
+        temporary.unlink(missing_ok=True)
+        detail = (completed.stderr or completed.stdout or "FFmpeg 未产生输出").strip()
+        raise RuntimeError(f"停顿保护时长适配失败：{detail[-1000:]}")
     temporary.replace(target)
 
 

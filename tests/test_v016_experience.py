@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class V016ExperienceTests(unittest.TestCase):
     def test_curated_templates_are_directly_discoverable_and_have_previews(self) -> None:
         manifest = json.loads(
-            (ROOT / "scripts" / "v016-experience-manifest.json").read_text(encoding="utf-8")
+            (ROOT / "scripts" / "v017-experience-manifest.json").read_text(encoding="utf-8")
         )
         self.assertEqual(len(manifest["templates"]), 7)
         self.assertEqual(len(manifest["app_mode_templates"]), 4)
@@ -70,7 +70,7 @@ class V016ExperienceTests(unittest.TestCase):
             int(node["id"]): node for node in creative["definitions"]["subgraphs"][0]["nodes"]
         }
         self.assertEqual(creative_nodes[9]["widgets_values"][:5], [3, 1001, 97, True, False])
-        self.assertEqual(creative_nodes[10]["widgets_values"][0], 1)
+        self.assertEqual(creative_nodes[10]["widgets_values"][0], 0)
         primitive_values = {
             node.get("title"): node["widgets_values"]
             for node in creative_nodes.values()
@@ -81,7 +81,45 @@ class V016ExperienceTests(unittest.TestCase):
         self.assertEqual(primitive_values["Seed 间隔"], [97, "fixed"])
         self.assertEqual(primitive_values["把原 Take 加入盲听"], [True])
         self.assertEqual(primitive_values["逐个 ASR 回读"], [False])
-        self.assertEqual(primitive_values["采用候选序号"], [1, "fixed"])
+        self.assertEqual(primitive_values["采用候选序号（0=仅盲听）"], [0, "fixed"])
+        constraints = {
+            node.get("title"): node.get("properties", {}).get(
+                "t8_firered_constraint"
+            )
+            for node in creative_nodes.values()
+            if str(node.get("type", "")).startswith("Primitive")
+        }
+        self.assertEqual(
+            constraints["新候选数量"],
+            {"min": 2, "max": 7, "step": 1, "integer": True, "label": "新候选数量"},
+        )
+        self.assertEqual(constraints["采用候选序号（0=仅盲听）"]["min"], 0)
+        self.assertEqual(constraints["采用候选序号（0=仅盲听）"]["max"], 8)
+        proxy_constraints = creative["nodes"][0]["properties"][
+            "t8_firered_proxy_constraints"
+        ]
+        self.assertEqual(len(proxy_constraints), 8)
+        self.assertEqual(proxy_constraints[0]["max"], 7)
+        self.assertEqual(proxy_constraints[5]["max"], 8)
+
+    def test_subgraph_number_constraints_have_frontend_enforcement(self) -> None:
+        source = (ROOT / "web" / "subgraph_controls_v017.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("t8_firered_constraint", source)
+        self.assertIn("t8_firered_proxy_constraints", source)
+        self.assertIn("applyProxyConstraints", source)
+        self.assertIn("Math.max", source)
+        self.assertIn("Math.min", source)
+        self.assertIn("PrimitiveInt", source)
+        self.assertIn("PrimitiveFloat", source)
+
+    def test_take_review_frontend_requires_explicit_blind_selection(self) -> None:
+        source = (ROOT / "web" / "take_review_v017.js").read_text(encoding="utf-8")
+        self.assertIn("fireredaudio_take_review", source)
+        self.assertIn("selected_line_id", source)
+        self.assertIn("匿名盲听", source)
+        self.assertIn("重新运行工作流", source)
 
     def test_creative_candidate_workflow_keeps_generation_review_and_adoption_separate(self) -> None:
         payload = json.loads(
@@ -133,7 +171,7 @@ class V016ExperienceTests(unittest.TestCase):
         )
         self.assertEqual(
             by_type["T8_FireRedAudio_TakeReviewBoard"]["widgets_values"],
-            [1, "{}", "{}", "creative-blind-review", "fireredaudio/reviews", 8, ""],
+            [0, "{}", "{}", "creative-blind-review", "fireredaudio/reviews", 8, ""],
         )
 
     def test_core_nodes_ship_default_chinese_and_english_help(self) -> None:

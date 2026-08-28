@@ -128,8 +128,33 @@
             "value"
           ]
         ],
+        "t8_firered_proxy_constraints": [
+          null,
+          null,
+          {
+            "min": 1,
+            "max": 32,
+            "step": 1,
+            "integer": true,
+            "label": "每批条数"
+          },
+          {
+            "min": 1.0,
+            "max": 2.0,
+            "step": 0.01,
+            "integer": false,
+            "label": "最大安全加速倍率"
+          },
+          {
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01,
+            "integer": false,
+            "label": "最大 CER/WER"
+          }
+        ],
         "cnr_id": "comfyui-fireredaudio-t8",
-        "ver": "0.16.0"
+        "ver": "0.17.0"
       },
       "widgets_values": [],
       "title": "FireRedAudio · SRT 初稿与 QA"
@@ -497,7 +522,7 @@
             ],
             "size": [
               470,
-              450
+              500
             ],
             "flags": {},
             "order": 8,
@@ -567,11 +592,13 @@
               1.15,
               false,
               0.9,
-              "v016-review-fit",
+              "v017-review-fit",
               "fireredaudio/duration-fit",
               -40.0,
               0.05,
-              0.12
+              0.12,
+              0.18,
+              1.12
             ]
           },
           {
@@ -772,7 +799,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveInt"
+              "Node name for S&R": "PrimitiveInt",
+              "t8_firered_constraint": {
+                "min": 1,
+                "max": 32,
+                "step": 1,
+                "integer": true,
+                "label": "每批条数"
+              }
             },
             "widgets_values": [
               8,
@@ -817,7 +851,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveFloat"
+              "Node name for S&R": "PrimitiveFloat",
+              "t8_firered_constraint": {
+                "min": 1.0,
+                "max": 2.0,
+                "step": 0.01,
+                "integer": false,
+                "label": "最大安全加速倍率"
+              }
             },
             "widgets_values": [
               1.15
@@ -861,7 +902,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveFloat"
+              "Node name for S&R": "PrimitiveFloat",
+              "t8_firered_constraint": {
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.01,
+                "integer": false,
+                "label": "最大 CER/WER"
+              }
             },
             "widgets_values": [
               0.2

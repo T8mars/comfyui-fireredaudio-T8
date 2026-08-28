@@ -64,6 +64,7 @@ from .runtime.production import (
     AudioBatch,
     ScriptPlan,
     VoiceBank,
+    acoustic_signature_distance,
     build_batch_subtitles,
     can_reuse_manifest_item,
     create_voice_bank,
@@ -83,6 +84,7 @@ from .runtime.production import (
     select_audio_batch_item,
     stable_digest,
     text_error_rate,
+    wav_acoustic_signature,
     wav_metrics,
     write_manifest,
 )
@@ -111,7 +113,7 @@ AudioBatchType = io.Custom("T8_FIREREDAUDIO_AUDIO_BATCH")
 SpeechQAType = io.Custom("T8_FIREREDAUDIO_SPEECH_QA")
 DeliveryPresetType = io.Custom("T8_FIREREDAUDIO_DELIVERY_PRESET")
 LocalRepairPlanType = io.Custom("T8_FIREREDAUDIO_LOCAL_REPAIR_PLAN")
-NODE_VERSION = "0.16.0"
+NODE_VERSION = "0.17.0"
 
 LONG_LOCATE_PROMPTS = {
     "timeline_summary": (
@@ -960,7 +962,9 @@ class T8FireRedAudioSeedAudition(io.ComfyNode):
                     "language": language,
                     # Keep filenames opaque so the native preview list can be used
                     # for a real blind listen; the seed remains in the manifest.
-                    "output_path": str(project_dir / f"take-{offset + 1:03d}.wav"),
+                    "output_path": str(
+                        project_dir / f"blind-{uuid.uuid4().hex[:12]}.wav"
+                    ),
                 }
             )
             requests.append(request)
@@ -1674,7 +1678,12 @@ class T8FireRedAudioAudioBatchResume(io.ComfyNode):
             missing_policy=missing_policy,
             verify_hashes=verify_hashes,
         )
-        return io.NodeOutput(batch, str(target), _json(report))
+        return io.NodeOutput(
+            batch,
+            str(target),
+            _json(report),
+            ui={"fireredaudio_resume_dashboard": [report]},
+        )
 
 
 class T8FireRedAudioVoiceProfile(io.ComfyNode):
@@ -2620,6 +2629,24 @@ class T8FireRedAudioDurationFit(io.ComfyNode):
                     step=0.01,
                     advanced=True,
                 ),
+                io.Float.Input(
+                    "internal_pause_min_seconds",
+                    display_name="保护内部停顿（秒以上）",
+                    default=0.18,
+                    min=0.05,
+                    max=2.0,
+                    step=0.01,
+                    advanced=True,
+                ),
+                io.Float.Input(
+                    "maximum_speech_speed",
+                    display_name="自然语速上限",
+                    default=1.12,
+                    min=1.0,
+                    max=2.0,
+                    step=0.01,
+                    advanced=True,
+                ),
             ],
             outputs=[
                 AudioBatchType.Output("audio_batch", display_name="适配后 AudioBatch"),
@@ -2643,6 +2670,8 @@ class T8FireRedAudioDurationFit(io.ComfyNode):
         edge_silence_threshold_db: float = -40.0,
         edge_silence_min_seconds: float = 0.05,
         edge_padding_seconds: float = 0.12,
+        internal_pause_min_seconds: float = 0.18,
+        maximum_speech_speed: float = 1.12,
         **kwargs,
     ) -> str:
         return stable_digest(
@@ -2658,6 +2687,8 @@ class T8FireRedAudioDurationFit(io.ComfyNode):
                 "edge_silence_threshold_db": float(edge_silence_threshold_db),
                 "edge_silence_min_seconds": float(edge_silence_min_seconds),
                 "edge_padding_seconds": float(edge_padding_seconds),
+                "internal_pause_min_seconds": float(internal_pause_min_seconds),
+                "maximum_speech_speed": float(maximum_speech_speed),
             }
         )
 
@@ -2675,6 +2706,8 @@ class T8FireRedAudioDurationFit(io.ComfyNode):
         edge_silence_threshold_db: float = -40.0,
         edge_silence_min_seconds: float = 0.05,
         edge_padding_seconds: float = 0.12,
+        internal_pause_min_seconds: float = 0.18,
+        maximum_speech_speed: float = 1.12,
     ) -> io.NodeOutput:
         project = _safe_name(project_name, "subtitle-fit")
         stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
@@ -2691,6 +2724,8 @@ class T8FireRedAudioDurationFit(io.ComfyNode):
             edge_silence_threshold_db=edge_silence_threshold_db,
             edge_silence_min_seconds=edge_silence_min_seconds,
             edge_padding_seconds=edge_padding_seconds,
+            internal_pause_min_seconds=internal_pause_min_seconds,
+            maximum_speech_speed=maximum_speech_speed,
         )
         manifest_path = output_dir / "duration-fit-manifest.json"
         payload = {
@@ -3250,6 +3285,15 @@ class T8FireRedAudioCreativeCandidatePool(io.ComfyNode):
                 io.String.Input("project_name", display_name="候选池项目名", default="creative-line-candidates"),
                 io.String.Input("subfolder", display_name="输出子目录", default="fireredaudio/candidates"),
                 SettingsType.Input("settings", display_name="生成参数", optional=True),
+                io.Float.Input(
+                    "minimum_acoustic_difference",
+                    display_name="候选声学差异预筛阈值",
+                    default=0.005,
+                    min=0.0,
+                    max=1.0,
+                    step=0.005,
+                    advanced=True,
+                ),
             ],
             outputs=[
                 AudioBatchType.Output("candidate_batch", display_name="匿名候选 AudioBatch"),
@@ -3275,6 +3319,7 @@ class T8FireRedAudioCreativeCandidatePool(io.ComfyNode):
         project_name: str,
         subfolder: str,
         settings: GenerationSettings | None = None,
+        minimum_acoustic_difference: float = 0.005,
         **kwargs,
     ) -> str:
         return stable_digest(
@@ -3292,6 +3337,7 @@ class T8FireRedAudioCreativeCandidatePool(io.ComfyNode):
                 "project_name": project_name,
                 "subfolder": subfolder,
                 "settings": _settings(settings).to_dict(),
+                "minimum_acoustic_difference": float(minimum_acoustic_difference),
             }
         )
 
@@ -3311,11 +3357,14 @@ class T8FireRedAudioCreativeCandidatePool(io.ComfyNode):
         project_name: str,
         subfolder: str,
         settings: GenerationSettings | None = None,
+        minimum_acoustic_difference: float = 0.005,
     ) -> io.NodeOutput:
         if not isinstance(audio_batch, AudioBatch):
             raise TypeError("创意候选池必须连接原 AudioBatch")
         if not isinstance(script_plan, ScriptPlan) or not isinstance(voice_bank, VoiceBank):
             raise TypeError("创意候选池必须连接原脚本计划和音色库")
+        if not 0.0 <= float(minimum_acoustic_difference) <= 1.0:
+            raise ValueError("候选声学差异预筛阈值必须在 0–1")
         requested = parse_line_ids(target_line_id)
         if len(requested) != 1:
             raise ValueError("创意候选池一次只处理一个 line ID；多条失败项请逐句试听决定")
@@ -3351,7 +3400,9 @@ class T8FireRedAudioCreativeCandidatePool(io.ComfyNode):
                     "prompt_text": profile.prompt_text,
                     "target_text": line.text,
                     "language": line.language,
-                    "output_path": str(project_dir / f"take-{offset + 1:03d}.wav"),
+                    "output_path": str(
+                        project_dir / f"blind-{uuid.uuid4().hex[:12]}.wav"
+                    ),
                     "release_after": False,
                 }
             )
@@ -3363,7 +3414,7 @@ class T8FireRedAudioCreativeCandidatePool(io.ComfyNode):
         if include_original:
             original_path = Path(str(original.get("output_path") or ""))
             if original.get("status") == "complete" and original_path.is_file():
-                blind_original = project_dir / "take-000.wav"
+                blind_original = project_dir / f"blind-{uuid.uuid4().hex[:12]}.wav"
                 shutil.copy2(original_path, blind_original)
                 items.append(
                     {
@@ -3442,9 +3493,27 @@ class T8FireRedAudioCreativeCandidatePool(io.ComfyNode):
         if not playable:
             raise RuntimeError("单句创意候选池没有生成任何可试听候选")
         by_hash: dict[str, list[str]] = {}
+        signatures: dict[str, dict[str, Any]] = {}
         for item in playable:
             by_hash.setdefault(str(item.get("output_sha256") or ""), []).append(str(item["line_id"]))
+            signatures[str(item["line_id"])] = wav_acoustic_signature(
+                str(item["output_path"])
+            )
         duplicate_groups = [group for digest, group in by_hash.items() if digest and len(group) > 1]
+        pairwise_acoustic_evidence: list[dict[str, Any]] = []
+        acoustic_near_duplicate_pairs: list[list[str]] = []
+        for left_index, left in enumerate(playable):
+            left_id = str(left["line_id"])
+            for right in playable[left_index + 1 :]:
+                right_id = str(right["line_id"])
+                evidence = acoustic_signature_distance(
+                    signatures[left_id], signatures[right_id]
+                )
+                pairwise_acoustic_evidence.append(
+                    {"left": left_id, "right": right_id, **evidence}
+                )
+                if evidence["score"] < float(minimum_acoustic_difference):
+                    acoustic_near_duplicate_pairs.append([left_id, right_id])
         manifest_path = project_dir / "candidate-manifest.json"
         report = {
             "manifest_version": MANIFEST_VERSION,
@@ -3459,6 +3528,15 @@ class T8FireRedAudioCreativeCandidatePool(io.ComfyNode):
             "playable_count": len(playable),
             "distinct_audio_hashes": len(by_hash),
             "duplicate_candidate_groups": duplicate_groups,
+            "minimum_acoustic_difference": float(minimum_acoustic_difference),
+            "pairwise_acoustic_evidence": pairwise_acoustic_evidence,
+            "acoustic_near_duplicate_pairs": acoustic_near_duplicate_pairs,
+            "diversity_prefilter_passed": not duplicate_groups
+            and not acoustic_near_duplicate_pairs,
+            "diversity_evidence_scope": (
+                "自动指标仅用于发现明显重复；是否存在人耳可辨的表演差异必须匿名盲听"
+            ),
+            "human_listening_required": True,
             "blind_filenames": True,
             "automatic_adoption": False,
             "performance": batch_result.get("performance"),
@@ -3683,7 +3761,13 @@ class T8FireRedAudioTakeReviewBoard(io.ComfyNode):
             ),
             inputs=[
                 AudioBatchType.Input("audio_batch", display_name="候选 AudioBatch"),
-                io.Int.Input("selected_position", display_name="采用序号（从 1 开始）", default=1, min=1, max=100000),
+                io.Int.Input(
+                    "selected_position",
+                    display_name="采用序号（0 = 仅盲听）",
+                    default=0,
+                    min=0,
+                    max=8,
+                ),
                 io.String.Input("selected_line_id", display_name="采用 line ID（优先）", default="", optional=True),
                 io.String.Input(
                     "ratings_json",
@@ -3764,6 +3848,19 @@ class T8FireRedAudioTakeReviewBoard(io.ComfyNode):
         playable = audio_batch.successful_items()
         if not playable:
             raise ValueError("AudioBatch 中没有可试听候选")
+        preview_count = max(2, min(8, int(preview_limit), len(playable)))
+        blind_order = sorted(
+            playable,
+            key=lambda item: stable_digest(
+                {
+                    "manifest": audio_batch.manifest_path,
+                    "sha256": item.get("output_sha256")
+                    or file_digest(str(item["output_path"])),
+                    "line_id": item.get("line_id"),
+                }
+            ),
+        )
+        previewed = blind_order[:preview_count]
         ratings = cls._mapping(ratings_json, "评分 JSON")
         notes = cls._mapping(notes_json, "备注 JSON")
         known_ids = {str(item.get("line_id") or "") for item in playable}
@@ -3780,13 +3877,26 @@ class T8FireRedAudioTakeReviewBoard(io.ComfyNode):
                 raise ValueError(f"{line_id} 的评分必须是 1–5")
             normalized_ratings[line_id] = round(score, 2)
         normalized_notes = {line_id: str(value).strip() for line_id, value in notes.items()}
-        selected = select_audio_batch_item(
-            audio_batch,
-            mode="line_id" if str(selected_line_id).strip() else "position",
-            position=int(selected_position),
-            line_id=str(selected_line_id).strip(),
-        )
-        selected_id = str(selected.get("line_id") or "")
+        requested_line_id = str(selected_line_id).strip()
+        selected: dict[str, Any] | None = None
+        if requested_line_id:
+            selected = next(
+                (
+                    dict(item)
+                    for item in playable
+                    if str(item.get("line_id") or "") == requested_line_id
+                ),
+                None,
+            )
+            if selected is None:
+                raise ValueError(f"没有找到要采用的候选：{requested_line_id}")
+        elif int(selected_position) > 0:
+            position = int(selected_position)
+            if position > len(previewed):
+                raise ValueError(f"盲听采用序号超出范围：1–{len(previewed)}")
+            selected = dict(previewed[position - 1])
+        selected_id = str(selected.get("line_id") or "") if selected else ""
+        preview_audio = selected or dict(previewed[0])
         reviewed_items: list[dict[str, Any]] = []
         for item in audio_batch.items:
             copy = dict(item)
@@ -3808,10 +3918,19 @@ class T8FireRedAudioTakeReviewBoard(io.ComfyNode):
             "node_version": NODE_VERSION,
             "source_manifest_path": audio_batch.manifest_path,
             "selected_line_id": selected_id,
+            "selection_required": not bool(selected_id),
             "ratings": normalized_ratings,
             "notes": normalized_notes,
             "playable_count": len(playable),
-            "previewed_count": min(len(playable), int(preview_limit)),
+            "previewed_count": len(previewed),
+            "blind_order": [
+                {
+                    "blind_label": chr(65 + index),
+                    "line_id": str(item.get("line_id") or ""),
+                }
+                for index, item in enumerate(previewed)
+            ],
+            "blind_order_applied": True,
             "source_files_overwritten": False,
             "items": reviewed_items,
         }
@@ -3819,13 +3938,36 @@ class T8FireRedAudioTakeReviewBoard(io.ComfyNode):
         reviewed_batch = AudioBatch(str(manifest_path), tuple(reviewed_items))
         ui: dict[str, Any] = {}
         try:
-            ui = saved_audio_files_ui(
-                [item["output_path"] for item in playable[: max(2, min(8, int(preview_limit)))]]
-            )
+            descriptors = saved_audio_files_ui(
+                [item["output_path"] for item in previewed]
+            )["audio"]
+            ui = {
+                "audio": descriptors,
+                "fireredaudio_take_review": [
+                    {
+                        "selection_required": not bool(selected_id),
+                        "selected_line_id": selected_id,
+                        "rows": [
+                            {
+                                "blind_label": chr(65 + index),
+                                "line_id": str(item.get("line_id") or ""),
+                                "audio": descriptors[index],
+                                "rating": normalized_ratings.get(
+                                    str(item.get("line_id") or "")
+                                ),
+                                "note": normalized_notes.get(
+                                    str(item.get("line_id") or ""), ""
+                                ),
+                            }
+                            for index, item in enumerate(previewed)
+                        ],
+                    }
+                ],
+            }
         except ValueError:
             pass
         return io.NodeOutput(
-            wav_to_audio(selected["output_path"]),
+            wav_to_audio(preview_audio["output_path"]),
             reviewed_batch,
             selected_id,
             str(manifest_path),

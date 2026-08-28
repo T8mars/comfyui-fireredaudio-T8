@@ -1,13 +1,13 @@
 # Take review board
 
-Shows candidate players/downloads and records ratings, notes, and one adopted take.
+Uses shuffled anonymous A/B/C players to record ratings, notes, and one adopted take.
 
 ## How to use
 
-1. Listen blind before reading seed evidence when possible.
-2. Candidate ID is more stable than position.
-3. Connect the reviewed AudioBatch and selected ID directly to Apply Creative Candidate.
+1. Keep selection position at 0 on the first run and listen at the board.
+2. Click Adopt in the node; it writes the hidden stable candidate ID.
+3. Run again, then connect the reviewed AudioBatch and adopted ID to Apply Creative Candidate.
 
 ## Important
 
-Automatic recommendations are advisory. This node's explicit adoption record represents the human choice.
+The first item is never adopted by default. An ID is emitted only after an explicit human choice and rerun.

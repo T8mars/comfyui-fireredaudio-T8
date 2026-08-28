@@ -92,8 +92,13 @@
             "value"
           ]
         ],
+        "t8_firered_proxy_constraints": [
+          null,
+          null,
+          null
+        ],
         "cnr_id": "comfyui-fireredaudio-t8",
-        "ver": "0.16.0"
+        "ver": "0.17.0"
       },
       "widgets_values": [],
       "title": "FireRedAudio · 快速声音克隆"

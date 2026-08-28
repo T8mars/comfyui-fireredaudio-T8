@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load_modules(comfy_root: Path):
     sys.path.insert(0, str(comfy_root.resolve()))
-    package = "fireredaudio_v016_real_candidate_validation"
+    package = "fireredaudio_v017_real_candidate_validation"
     spec = importlib.util.spec_from_file_location(
         package,
         ROOT / "__init__.py",
@@ -32,7 +32,7 @@ def load_modules(comfy_root: Path):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Real-model v0.16 creative candidate smoke")
+    parser = argparse.ArgumentParser(description="Real-model v0.17 creative candidate smoke")
     parser.add_argument("--comfy-root", required=True)
     parser.add_argument("--model-root", required=True)
     parser.add_argument("--runtime-python", required=True)
@@ -111,7 +111,7 @@ def main() -> int:
             97,
             True,
             False,
-            "v016-real-candidates",
+            "v017-real-candidates",
             "fireredaudio/candidates",
             settings,
         )
@@ -124,6 +124,8 @@ def main() -> int:
             raise AssertionError("真模型候选 Seed 证据不正确")
         if report["distinct_audio_hashes"] < 2:
             raise AssertionError("真模型候选全部为相同哈希")
+        if not report["diversity_prefilter_passed"] or not report["human_listening_required"]:
+            raise AssertionError("真模型候选没有通过声学重复预筛或缺少人工盲听门禁")
         if production.file_digest(source_audio) != source_hash:
             raise AssertionError("真模型候选生成覆盖了源 Take")
         evidence = {
@@ -141,6 +143,12 @@ def main() -> int:
             "playable_count": report["playable_count"],
             "distinct_audio_hashes": report["distinct_audio_hashes"],
             "duplicate_candidate_groups": report["duplicate_candidate_groups"],
+            "minimum_acoustic_difference": report["minimum_acoustic_difference"],
+            "pairwise_acoustic_evidence": report["pairwise_acoustic_evidence"],
+            "acoustic_near_duplicate_pairs": report["acoustic_near_duplicate_pairs"],
+            "diversity_prefilter_passed": report["diversity_prefilter_passed"],
+            "human_listening_required": report["human_listening_required"],
+            "blind_filenames": report["blind_filenames"],
             "performance": report.get("performance"),
             "items": [
                 {
@@ -154,7 +162,7 @@ def main() -> int:
                 for item in playable
             ],
         }
-        report_path = output_root / "v016-real-candidate-acceptance.json"
+        report_path = output_root / "v017-real-candidate-acceptance.json"
         report_path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(evidence, ensure_ascii=False, indent=2))
     finally:

@@ -140,8 +140,42 @@
             "value"
           ]
         ],
+        "t8_firered_proxy_constraints": [
+          {
+            "min": 2,
+            "max": 7,
+            "step": 1,
+            "integer": true,
+            "label": "新候选数量"
+          },
+          {
+            "min": 0,
+            "max": 4294267295,
+            "step": 1,
+            "integer": true,
+            "label": "起始 Seed"
+          },
+          {
+            "min": 1,
+            "max": 100000,
+            "step": 1,
+            "integer": true,
+            "label": "Seed 间隔"
+          },
+          null,
+          null,
+          {
+            "min": 0,
+            "max": 8,
+            "step": 1,
+            "integer": true,
+            "label": "采用候选序号（0=仅盲听）"
+          },
+          null,
+          null
+        ],
         "cnr_id": "comfyui-fireredaudio-t8",
-        "ver": "0.16.0"
+        "ver": "0.17.0"
       },
       "widgets_values": [],
       "title": "FireRedAudio · 单句创意候选与采用"
@@ -473,7 +507,8 @@
               true,
               false,
               "creative-line-candidates",
-              "fireredaudio/candidates"
+              "fireredaudio/candidates",
+              0.005
             ]
           },
           {
@@ -484,8 +519,8 @@
               340
             ],
             "size": [
-              660,
-              520
+              760,
+              560
             ],
             "flags": {},
             "order": 9,
@@ -561,14 +596,15 @@
               "Node name for S&R": "T8_FireRedAudio_TakeReviewBoard"
             },
             "widgets_values": [
-              1,
+              0,
               "{}",
               "{}",
               "creative-blind-review",
               "fireredaudio/reviews",
               8,
               ""
-            ]
+            ],
+            "title": "步骤 2 · 匿名盲听并点采用，然后重新运行"
           },
           {
             "id": 11,
@@ -641,7 +677,8 @@
             "widgets_values": [
               "creative-candidate-adoption",
               "fireredaudio/candidate-adoptions"
-            ]
+            ],
+            "title": "步骤 3 · 非破坏采用选中的候选"
           },
           {
             "id": 12,
@@ -680,7 +717,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveInt"
+              "Node name for S&R": "PrimitiveInt",
+              "t8_firered_constraint": {
+                "min": 2,
+                "max": 7,
+                "step": 1,
+                "integer": true,
+                "label": "新候选数量"
+              }
             },
             "widgets_values": [
               3,
@@ -725,7 +769,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveInt"
+              "Node name for S&R": "PrimitiveInt",
+              "t8_firered_constraint": {
+                "min": 0,
+                "max": 4294267295,
+                "step": 1,
+                "integer": true,
+                "label": "起始 Seed"
+              }
             },
             "widgets_values": [
               1001,
@@ -770,7 +821,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveInt"
+              "Node name for S&R": "PrimitiveInt",
+              "t8_firered_constraint": {
+                "min": 1,
+                "max": 100000,
+                "step": 1,
+                "integer": true,
+                "label": "Seed 间隔"
+              }
             },
             "widgets_values": [
               97,
@@ -882,7 +940,7 @@
             "mode": 0,
             "inputs": [
               {
-                "label": "采用候选序号",
+                "label": "采用候选序号（0=仅盲听）",
                 "localized_name": "value",
                 "name": "value",
                 "type": "INT",
@@ -903,13 +961,20 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveInt"
+              "Node name for S&R": "PrimitiveInt",
+              "t8_firered_constraint": {
+                "min": 0,
+                "max": 8,
+                "step": 1,
+                "integer": true,
+                "label": "采用候选序号（0=仅盲听）"
+              }
             },
             "widgets_values": [
-              1,
+              0,
               "fixed"
             ],
-            "title": "采用候选序号"
+            "title": "采用候选序号（0=仅盲听）"
           },
           {
             "id": 18,

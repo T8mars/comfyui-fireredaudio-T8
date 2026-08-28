@@ -131,6 +131,25 @@ def main() -> int:
                 raise AssertionError("候选音频没有形成可区分的候选池")
             if not report["blind_filenames"] or report["automatic_adoption"]:
                 raise AssertionError("候选池没有保持盲听和显式采用语义")
+            if not report["diversity_prefilter_passed"] or not report["human_listening_required"]:
+                raise AssertionError("候选差异预筛或人工盲听门禁没有生效")
+
+            preview_output = nodes.T8FireRedAudioTakeReviewBoard.execute(
+                candidates,
+                0,
+                "",
+                "{}",
+                "{}",
+                "candidate-preview-only",
+                "fireredaudio/reviews",
+                8,
+            )
+            _preview_audio, previewed, preview_selected_id, _preview_manifest, preview_text = preview_output.result
+            preview_report = json.loads(preview_text)
+            if preview_selected_id or not preview_report["selection_required"]:
+                raise AssertionError("首次盲听在用户选择前自动采用了候选")
+            if any((item.get("human_review") or {}).get("adopted") for item in previewed.items):
+                raise AssertionError("仅盲听阶段不应把任何候选标记为采用")
 
             review_output = nodes.T8FireRedAudioTakeReviewBoard.execute(
                 candidates,

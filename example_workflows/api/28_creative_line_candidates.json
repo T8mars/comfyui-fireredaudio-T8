@@ -79,18 +79,9 @@
     }
   },
   "8": {
-    "class_type": "T8_FireRedAudio_LineReview",
+    "class_type": "PrimitiveStringMultiline",
     "inputs": {
-      "audio_batch": [
-        "2",
-        0
-      ],
-      "decisions_json": "{}",
-      "ratings_json": "{}",
-      "notes_json": "{}",
-      "review_name": "creative-target",
-      "subfolder": "fireredaudio/line-reviews",
-      "preview_limit": 40
+      "value": "line-1"
     }
   },
   "9": {
@@ -101,7 +92,7 @@
         0
       ],
       "audio_batch": [
-        "8",
+        "2",
         0
       ],
       "script_plan": [
@@ -114,7 +105,7 @@
       ],
       "target_line_id": [
         "8",
-        2
+        0
       ],
       "candidate_count": 3,
       "seed_start": 1001,
@@ -126,7 +117,8 @@
       "settings": [
         "7",
         0
-      ]
+      ],
+      "minimum_acoustic_difference": 0.005
     }
   },
   "10": {
@@ -136,7 +128,7 @@
         "9",
         0
       ],
-      "selected_position": 1,
+      "selected_position": 0,
       "selected_line_id": "",
       "ratings_json": "{}",
       "notes_json": "{}",
@@ -149,7 +141,7 @@
     "class_type": "T8_FireRedAudio_CandidateApply",
     "inputs": {
       "source_audio_batch": [
-        "8",
+        "2",
         0
       ],
       "reviewed_candidates": [

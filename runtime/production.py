@@ -1255,3 +1255,99 @@ def wav_metrics(path: str | Path) -> dict[str, Any]:
         "clipping_ratio": clipping_ratio,
         "silence_ratio": silence_ratio,
     }
+
+
+def wav_acoustic_signature(
+    path: str | Path,
+    *,
+    envelope_bins: int = 24,
+    spectrum_bins: int = 24,
+) -> dict[str, Any]:
+    """Build a compact content-aware signature for candidate pre-screening.
+
+    This is deliberately evidence rather than a perceptual verdict: duration,
+    normalized energy shape and average spectrum can reject obvious duplicates,
+    while the final acting decision remains an anonymous human listen.
+    """
+    import torch
+
+    if not 8 <= int(envelope_bins) <= 128 or not 8 <= int(spectrum_bins) <= 128:
+        raise ValueError("声学签名分箱数量必须在 8–128")
+    audio, sample_rate = _read_wav_tensor(path)
+    mono = audio.float().mean(dim=0)
+    duration = mono.numel() / sample_rate if sample_rate else 0.0
+    if not mono.numel():
+        return {
+            "duration_seconds": 0.0,
+            "envelope": [0.0] * int(envelope_bins),
+            "spectrum": [0.0] * int(spectrum_bins),
+        }
+
+    envelope_values = []
+    for chunk in torch.tensor_split(mono, int(envelope_bins)):
+        value = float(torch.sqrt(torch.mean(chunk.square())).item()) if chunk.numel() else 0.0
+        envelope_values.append(value)
+    envelope_peak = max(envelope_values, default=0.0)
+    if envelope_peak > 1e-12:
+        envelope_values = [value / envelope_peak for value in envelope_values]
+
+    n_fft = 512
+    if mono.numel() < n_fft:
+        mono = torch.nn.functional.pad(mono, (0, n_fft - mono.numel()))
+    spectrum = torch.stft(
+        mono,
+        n_fft=n_fft,
+        hop_length=n_fft // 2,
+        window=torch.hann_window(n_fft, device=mono.device),
+        return_complex=True,
+    ).abs().mean(dim=1)
+    spectrum_values = [
+        float(chunk.sum().item()) if chunk.numel() else 0.0
+        for chunk in torch.tensor_split(spectrum, int(spectrum_bins))
+    ]
+    spectrum_total = sum(spectrum_values)
+    if spectrum_total > 1e-12:
+        spectrum_values = [value / spectrum_total for value in spectrum_values]
+
+    return {
+        "duration_seconds": round(float(duration), 8),
+        "envelope": [round(value, 8) for value in envelope_values],
+        "spectrum": [round(value, 8) for value in spectrum_values],
+    }
+
+
+def acoustic_signature_distance(
+    left: dict[str, Any], right: dict[str, Any]
+) -> dict[str, float]:
+    """Compare signatures on a stable 0–1 evidence scale."""
+    left_duration = float(left.get("duration_seconds") or 0.0)
+    right_duration = float(right.get("duration_seconds") or 0.0)
+    duration_ratio = abs(left_duration - right_duration) / max(
+        left_duration, right_duration, 1e-9
+    )
+    left_envelope = [float(value) for value in (left.get("envelope") or [])]
+    right_envelope = [float(value) for value in (right.get("envelope") or [])]
+    if len(left_envelope) != len(right_envelope) or not left_envelope:
+        raise ValueError("声学签名的包络分箱不一致")
+    envelope_distance = sum(
+        abs(a - b) for a, b in zip(left_envelope, right_envelope)
+    ) / len(left_envelope)
+    left_spectrum = [float(value) for value in (left.get("spectrum") or [])]
+    right_spectrum = [float(value) for value in (right.get("spectrum") or [])]
+    if len(left_spectrum) != len(right_spectrum) or not left_spectrum:
+        raise ValueError("声学签名的频谱分箱不一致")
+    spectrum_distance = sum(
+        abs(a - b) for a, b in zip(left_spectrum, right_spectrum)
+    ) / 2.0
+    score = min(
+        1.0,
+        0.5 * min(1.0, duration_ratio)
+        + 0.3 * min(1.0, envelope_distance)
+        + 0.2 * min(1.0, spectrum_distance),
+    )
+    return {
+        "score": round(score, 8),
+        "duration_ratio": round(duration_ratio, 8),
+        "envelope_distance": round(envelope_distance, 8),
+        "spectrum_distance": round(spectrum_distance, 8),
+    }

@@ -45,6 +45,38 @@ def write_tone_with_edge_silence(
         writer.writeframes(frames)
 
 
+def write_tone_with_internal_pause(
+    path: Path,
+    *,
+    leading_seconds: float,
+    first_tone_seconds: float,
+    pause_seconds: float,
+    second_tone_seconds: float,
+    trailing_seconds: float,
+    sample_rate: int = 24000,
+) -> None:
+    frames = bytearray(round(leading_seconds * sample_rate) * 2)
+    for segment_index, (seconds, frequency) in enumerate(
+        (
+            (first_tone_seconds, 440.0),
+            (second_tone_seconds, 550.0),
+        )
+    ):
+        if segment_index == 1:
+            frames.extend(bytearray(round(pause_seconds * sample_rate) * 2))
+        for index in range(round(seconds * sample_rate)):
+            value = round(
+                math.sin(2 * math.pi * frequency * index / sample_rate) * 7000
+            )
+            frames.extend(int(value).to_bytes(2, "little", signed=True))
+    frames.extend(bytearray(round(trailing_seconds * sample_rate) * 2))
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(frames)
+
+
 class CreatorToolTests(unittest.TestCase):
     def test_normalization_preserves_source_and_exposes_spoken_text(self) -> None:
         plan = PRODUCTION.ScriptPlan(
@@ -171,6 +203,9 @@ class CreatorToolTests(unittest.TestCase):
             self.assertEqual(batch.items[1]["status"], "missing")
             self.assertEqual(report["missing"], ["line-2"])
             self.assertEqual(report["reviewed"], 1)
+            self.assertEqual(report["approved_line_ids"], ["line-1"])
+            self.assertFalse(report["export_ready"])
+            self.assertIn("缺失", report["next_action"])
 
     def test_manifest_resume_rejects_audio_outside_allowed_root(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -297,6 +332,68 @@ class CreatorToolTests(unittest.TestCase):
             self.assertEqual(report["adapted_line_ids"], ["speech-aware"])
             self.assertEqual(report["retry_line_ids"], [])
 
+    def test_speech_aware_duration_fit_preserves_internal_performance_pause(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "speech-with-pause.wav"
+            write_tone_with_internal_pause(
+                source,
+                leading_seconds=0.20,
+                first_tone_seconds=0.80,
+                pause_seconds=0.40,
+                second_tone_seconds=0.80,
+                trailing_seconds=0.20,
+            )
+            source_hash = PRODUCTION.file_digest(source)
+            batch = PRODUCTION.AudioBatch(
+                "source.json",
+                (
+                    {
+                        "line_id": "pause-protected",
+                        "index": 1,
+                        "speaker": "旁白",
+                        "status": "complete",
+                        "output_path": str(source),
+                        "start_seconds": 0.0,
+                        "end_seconds": 2.10,
+                    },
+                ),
+            )
+            fitted, report = TOOLS.fit_audio_batch_to_cues(
+                batch,
+                root / "fit",
+                strategy="speech_aware",
+                maximum_speed=1.15,
+                maximum_speech_speed=1.12,
+                tolerance_seconds=0.05,
+                edge_padding_seconds=0.12,
+                internal_pause_min_seconds=0.18,
+            )
+            row = report["items"][0]
+            fitted_path = Path(fitted.items[0]["output_path"])
+            output_metrics = PRODUCTION.wav_metrics(fitted_path)
+            output_silence = TOOLS._boundary_silence_seconds(
+                fitted_path,
+                duration_seconds=float(output_metrics["duration_seconds"]),
+                threshold_db=-40.0,
+                minimum_seconds=0.05,
+            )
+            internal = [
+                interval
+                for interval in output_silence["intervals"]
+                if interval["start_seconds"] > 0.02
+                and interval["end_seconds"] < output_metrics["duration_seconds"] - 0.02
+            ]
+            self.assertEqual(row["action"], "pause_protected_time_stretched")
+            self.assertEqual(len(row["protected_internal_pauses"]), 1)
+            self.assertAlmostEqual(row["protected_pause_seconds"], 0.40, delta=0.03)
+            self.assertLessEqual(row["speech_tempo"], 1.12)
+            self.assertAlmostEqual(output_metrics["duration_seconds"], 2.10, delta=0.04)
+            self.assertTrue(internal)
+            self.assertAlmostEqual(internal[0]["duration_seconds"], 0.40, delta=0.04)
+            self.assertEqual(PRODUCTION.file_digest(source), source_hash)
+            self.assertEqual(report["retry_line_ids"], [])
+
     def test_frontend_review_widget_is_packaged_and_binds_serialized_inputs(
         self,
     ) -> None:
@@ -308,6 +405,12 @@ class CreatorToolTests(unittest.TestCase):
         self.assertIn('note.addEventListener("input", sync)', source)
         self.assertIn("addDOMWidget", source)
         self.assertIn("fireredaudio_review", source)
+        resume_source = (ROOT / "web" / "resume_dashboard_v017.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("fireredaudio_resume_dashboard", resume_source)
+        self.assertIn("export_ready", resume_source)
+        self.assertIn("下一步", resume_source)
 
     def test_v014_workflows_close_review_repair_and_resume_loops(self) -> None:
         production = json.loads(

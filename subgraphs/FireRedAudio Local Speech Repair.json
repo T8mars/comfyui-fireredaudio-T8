@@ -121,8 +121,39 @@
             "value"
           ]
         ],
+        "t8_firered_proxy_constraints": [
+          {
+            "min": 0.0,
+            "max": 86400.0,
+            "step": 0.01,
+            "integer": false,
+            "label": "开始时间（秒）"
+          },
+          {
+            "min": 0.01,
+            "max": 86400.0,
+            "step": 0.01,
+            "integer": false,
+            "label": "结束时间（秒）"
+          },
+          {
+            "min": 0,
+            "max": 5000,
+            "step": 1,
+            "integer": true,
+            "label": "上下文（毫秒）"
+          },
+          null,
+          {
+            "min": 0,
+            "max": 2000,
+            "step": 1,
+            "integer": true,
+            "label": "回填交叉淡化（毫秒）"
+          }
+        ],
         "cnr_id": "comfyui-fireredaudio-t8",
-        "ver": "0.16.0"
+        "ver": "0.17.0"
       },
       "widgets_values": [],
       "title": "FireRedAudio · 局部语音修复"
@@ -581,7 +612,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveFloat"
+              "Node name for S&R": "PrimitiveFloat",
+              "t8_firered_constraint": {
+                "min": 0.0,
+                "max": 86400.0,
+                "step": 0.01,
+                "integer": false,
+                "label": "开始时间（秒）"
+              }
             },
             "widgets_values": [
               2.0
@@ -625,7 +663,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveFloat"
+              "Node name for S&R": "PrimitiveFloat",
+              "t8_firered_constraint": {
+                "min": 0.01,
+                "max": 86400.0,
+                "step": 0.01,
+                "integer": false,
+                "label": "结束时间（秒）"
+              }
             },
             "widgets_values": [
               5.0
@@ -669,7 +714,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveInt"
+              "Node name for S&R": "PrimitiveInt",
+              "t8_firered_constraint": {
+                "min": 0,
+                "max": 5000,
+                "step": 1,
+                "integer": true,
+                "label": "上下文（毫秒）"
+              }
             },
             "widgets_values": [
               250,
@@ -758,7 +810,14 @@
               }
             ],
             "properties": {
-              "Node name for S&R": "PrimitiveInt"
+              "Node name for S&R": "PrimitiveInt",
+              "t8_firered_constraint": {
+                "min": 0,
+                "max": 2000,
+                "step": 1,
+                "integer": true,
+                "label": "回填交叉淡化（毫秒）"
+              }
             },
             "widgets_values": [
               40,
