@@ -113,7 +113,7 @@ AudioBatchType = io.Custom("T8_FIREREDAUDIO_AUDIO_BATCH")
 SpeechQAType = io.Custom("T8_FIREREDAUDIO_SPEECH_QA")
 DeliveryPresetType = io.Custom("T8_FIREREDAUDIO_DELIVERY_PRESET")
 LocalRepairPlanType = io.Custom("T8_FIREREDAUDIO_LOCAL_REPAIR_PLAN")
-NODE_VERSION = "0.19.0"
+NODE_VERSION = "0.19.1"
 
 LONG_LOCATE_PROMPTS = {
     "timeline_summary": (
@@ -356,7 +356,7 @@ class T8FireRedAudioModelLoader(io.ComfyNode):
                 io.Combo.Input("model_name", display_name="模型", options=options, default=options[0]),
                 io.String.Input("custom_model_path", display_name="自定义模型根目录", default="", optional=True),
                 io.Combo.Input("device", display_name="推理设备", options=["auto", "cuda:0", "cuda:1", "cuda:2", "cuda:3", "cpu"], default="auto", tooltip="auto 由隔离 Worker 选择第一张可用 NVIDIA GPU；运行时状态会显示真实显存。"),
-                io.Combo.Input("memory_mode", display_name="显存模式", options=["auto", "full_gpu", "sequential", "decoder_cpu"], default="auto", tooltip="auto 在低于 36GB 显存时让主模型与解码器顺序上卡。"),
+                io.Combo.Input("memory_mode", display_name="显存模式", options=["auto", "full_gpu", "sequential", "decoder_cpu"], default="auto", tooltip="auto 会读取所选模型清单的显存门槛并结合实时空闲显存选择；模型加载后保持实际已选模式。"),
                 io.Combo.Input("acceleration_mode", display_name="加速模式", options=["auto_safe", "off", "flash_attention", "deepspeed", "fla_liger", "torch_compile"], default="auto_safe", tooltip="auto_safe 默认使用预编译 FlashAttention；DeepSpeed 为单卡 BF16 实验模式。失败会显式回退，且不会修改 ComfyUI 宿主环境。"),
                 io.Combo.Input("profile", display_name="校验配置", options=["full", "lite"], default="full"),
                 io.Combo.Input("worker_mode", display_name="Worker 模式", options=["managed", "external"], default="managed"),

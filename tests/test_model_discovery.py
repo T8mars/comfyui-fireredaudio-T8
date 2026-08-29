@@ -17,6 +17,7 @@ SPEC.loader.exec_module(MODEL_DISCOVERY)
 fingerprint = MODEL_DISCOVERY.fingerprint
 local_manifest = MODEL_DISCOVERY.local_manifest
 validate_sizes = MODEL_DISCOVERY.validate_sizes
+discover_models = MODEL_DISCOVERY.discover_models
 
 
 def write_manifest(root: Path, files: dict, *, profile: str = "int8-wo-safe") -> None:
@@ -98,3 +99,22 @@ def test_invalid_local_manifest_fails_explicitly(tmp_path: Path) -> None:
         assert "模型清单无法读取" in str(exc)
     else:
         raise AssertionError("invalid local manifests must not silently fall back")
+
+
+def test_duplicate_model_folder_names_are_qualified_instead_of_overwritten(
+    tmp_path: Path, monkeypatch
+) -> None:
+    roots = [tmp_path / "first", tmp_path / "second"]
+    expected = []
+    for root in roots:
+        model = root / "FireRedAudio"
+        (model / "FireRedAudio").mkdir(parents=True)
+        (model / "FireRedAudio" / "config.json").write_text("{}", encoding="utf-8")
+        expected.append(model.resolve())
+    monkeypatch.setattr(MODEL_DISCOVERY, "search_roots", lambda: roots)
+
+    found = discover_models()
+
+    assert len(found) == 2
+    assert set(found.values()) == set(expected)
+    assert all(" · " in label for label in found)

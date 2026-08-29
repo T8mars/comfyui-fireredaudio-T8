@@ -1,4 +1,4 @@
-# comfyui-fireredaudio-T8 v0.19.0
+# comfyui-fireredaudio-T8 v0.19.1
 
 最简单的安装方法：
 
@@ -131,10 +131,10 @@ ComfyUI/models/TTS/FireRedAudio/
 Lite 仅下载主模型，支持 ASR/理解；Full 增加 RedAE decoder，支持生成和编辑：
 
 ```powershell
-python scripts/download_models.py --target "D:\ComfyUI\models\TTS\FireRedAudio" --profile full
+python scripts/download_models.py --target "D:\ComfyUI\models\TTS\FireRedAudio" --profile full --variant int8-wo-safe-v1
 ```
 
-下载器默认先使用上述 Hugging Face 仓库，失败时才尝试上游 ModelScope；支持断点续传、磁盘预检、固定 revision 和下载后文件大小校验。完整 SHA-256 校验可追加 `--full-hash`。
+下载器默认选择稳定的 `int8-wo-safe-v1`，从对应 Hugging Face 固定 revision 先读取清单，再执行精确磁盘预检、断点续传和下载后文件大小校验。只有显式选择 `--variant upstream-bf16` 时才允许回退上游 ModelScope；不会在量化下载失败后悄悄换成大型 BF16。完整 SHA-256 校验可追加 `--full-hash`。
 
 ## 基础工作流
 

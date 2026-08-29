@@ -691,12 +691,16 @@ class FireRedAudioInference:
             _move_inference_module(self.model, "cpu")
             gc.collect()
             torch.cuda.empty_cache()
-            self.vae_decoder.to(self.device)
-            audio = self.vae_decoder.decode(vae_latents.to(self.device).float()).cpu()
-            self._cancel_check()
-            self.vae_decoder.to("cpu")
-            gc.collect()
-            torch.cuda.empty_cache()
+            try:
+                self.vae_decoder.to(self.device)
+                audio = self.vae_decoder.decode(vae_latents.to(self.device).float()).cpu()
+                self._cancel_check()
+            finally:
+                # A decoder exception or cancellation must not leave both the decoder
+                # and the next task's main model competing for VRAM.
+                self.vae_decoder.to("cpu")
+                gc.collect()
+                torch.cuda.empty_cache()
         elif self.memory_mode == "decoder_cpu":
             self._progress_callback("decode", 0.9, "正在 CPU 解码波形")
             audio = self.vae_decoder.decode(vae_latents.cpu().float()).cpu()
@@ -792,26 +796,28 @@ class FireRedAudioInference:
             gc.collect()
             torch.cuda.empty_cache()
             assert self.vae_decoder is not None
-            self.vae_decoder.to(self.device)
-            for index, value in enumerate(deferred):
-                if isinstance(value, Exception):
-                    continue
-                self._cancel_check()
-                try:
-                    value.audio = self.vae_decoder.decode(
-                        value.vae_latents.to(self.device).float()
-                    ).cpu()
-                    original_progress(
-                        f"batch_{index + 1}_decode",
-                        0.8 + 0.18 * (index + 1) / total,
-                        f"已解码 {index + 1}/{total}",
-                    )
-                except Exception as exc:
+            try:
+                self.vae_decoder.to(self.device)
+                for index, value in enumerate(deferred):
+                    if isinstance(value, Exception):
+                        continue
                     self._cancel_check()
-                    deferred[index] = exc
-            self.vae_decoder.to("cpu")
-            gc.collect()
-            torch.cuda.empty_cache()
+                    try:
+                        value.audio = self.vae_decoder.decode(
+                            value.vae_latents.to(self.device).float()
+                        ).cpu()
+                        original_progress(
+                            f"batch_{index + 1}_decode",
+                            0.8 + 0.18 * (index + 1) / total,
+                            f"已解码 {index + 1}/{total}",
+                        )
+                    except Exception as exc:
+                        self._cancel_check()
+                        deferred[index] = exc
+            finally:
+                self.vae_decoder.to("cpu")
+                gc.collect()
+                torch.cuda.empty_cache()
             return deferred
         finally:
             self._progress_callback = original_progress
@@ -831,8 +837,20 @@ class FireRedAudioInference:
         public hook after a successful task so AUTO/sequential mode is ready for
         the next request instead of appearing idle with the model left on CPU.
         """
+        decoder_parked = False
+        if (
+            self.memory_mode == "sequential"
+            and self.device.type == "cuda"
+            and self.vae_decoder is not None
+        ):
+            # This is deliberately idempotent. It also repairs a decoder left on
+            # CUDA by an interrupted older inference path before restoring the model.
+            self.vae_decoder.to("cpu")
+            decoder_parked = True
+            gc.collect()
+            torch.cuda.empty_cache()
         if self.generation_model_is_resident():
-            return False
+            return decoder_parked
         _move_inference_module(self.model, self.device)
         return True
 

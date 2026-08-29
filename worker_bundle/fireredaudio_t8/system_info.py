@@ -8,7 +8,12 @@ GIB = 1024**3
 FULL_GPU_MIN_FREE_GIB = 36.0
 
 
-def gpu_inventory() -> list[dict[str, Any]]:
+def gpu_inventory(
+    *,
+    full_gpu_min_free_bytes: int | None = None,
+    active_device: str | None = None,
+    active_memory_mode: str | None = None,
+) -> list[dict[str, Any]]:
     """Return the GPUs visible to the isolated worker without mutating CUDA state."""
     try:
         import torch
@@ -28,14 +33,29 @@ def gpu_inventory() -> list[dict[str, Any]]:
         except Exception:
             pass
         free_gib = round(free / GIB, 2) if free is not None else None
-        recommended = (
-            "full_gpu"
-            if free_gib is not None and free_gib >= FULL_GPU_MIN_FREE_GIB
-            else "sequential"
+        device_id = f"cuda:{index}"
+        threshold = int(
+            full_gpu_min_free_bytes
+            if full_gpu_min_free_bytes is not None
+            else FULL_GPU_MIN_FREE_GIB * GIB
         )
+        if active_device == device_id and active_memory_mode in {
+            "full_gpu",
+            "sequential",
+            "decoder_cpu",
+        }:
+            # Once a model is resident, current free VRAM is no longer a valid
+            # load-time signal. Report the mode actually selected for that engine.
+            recommended = str(active_memory_mode)
+        else:
+            recommended = (
+                "full_gpu"
+                if free is not None and free >= threshold
+                else "sequential"
+            )
         devices.append(
             {
-                "id": f"cuda:{index}",
+                "id": device_id,
                 "index": index,
                 "name": props.name,
                 "total_bytes": total,
@@ -44,6 +64,7 @@ def gpu_inventory() -> list[dict[str, Any]]:
                 "free_gib": free_gib,
                 "compute_capability": f"{props.major}.{props.minor}",
                 "recommended_memory_mode": recommended,
+                "recommendation_min_free_bytes": threshold,
             }
         )
     return devices

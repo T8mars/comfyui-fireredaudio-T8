@@ -11,6 +11,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="使用隔离运行时下载 FireRedAudio 模型")
     parser.add_argument("--target", required=True)
     parser.add_argument("--profile", choices=["lite", "full"], default="full")
+    parser.add_argument(
+        "--variant",
+        choices=[
+            "int8-wo-safe-v1",
+            "bf16-slim-v1",
+            "int8-wo-extended-v1",
+            "int8-convrot-experimental-v1",
+            "upstream-bf16",
+        ],
+        default="int8-wo-safe-v1",
+    )
     parser.add_argument("--source", choices=["auto", "modelscope", "huggingface"], default="auto")
     parser.add_argument("--full-hash", action="store_true")
     parser.add_argument("--python", default="")
@@ -23,7 +34,18 @@ def main() -> int:
     script = source / "scripts" / "download_models.py"
     if not script.is_file():
         raise SystemExit("worker_bundle 不完整，请重新安装节点发行包")
-    command = [str(python), str(script), "--target", args.target, "--profile", args.profile, "--source", args.source]
+    command = [
+        str(python),
+        str(script),
+        "--target",
+        args.target,
+        "--profile",
+        args.profile,
+        "--variant",
+        args.variant,
+        "--source",
+        args.source,
+    ]
     if args.full_hash:
         command.append("--full-hash")
     env = os.environ.copy()

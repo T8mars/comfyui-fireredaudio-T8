@@ -17,10 +17,12 @@ from .worker_client import WorkerClient
 class WorkerManager:
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._log_lock = threading.Lock()
         self._process: subprocess.Popen[str] | None = None
         self._client: WorkerClient | None = None
         self._signature: tuple[str, ...] | None = None
         self._log_lines: list[str] = []
+        self._log_thread: threading.Thread | None = None
 
     def client_for(self, handle: RuntimeHandle) -> WorkerClient:
         if handle.worker_url:
@@ -45,10 +47,12 @@ class WorkerManager:
 
     def status(self) -> dict:
         with self._lock:
+            with self._log_lock:
+                recent_logs = list(self._log_lines[-30:])
             result = {
                 "managed_process": self._process is not None,
                 "pid": self._process.pid if self._process else None,
-                "recent_logs": self._log_lines[-30:],
+                "recent_logs": recent_logs,
             }
             if self._client:
                 try:
@@ -122,11 +126,18 @@ class WorkerManager:
         )
         self._client = WorkerClient(f"http://127.0.0.1:{port}", token)
         self._signature = signature
-        threading.Thread(target=self._capture_logs, daemon=True).start()
+        self._log_thread = threading.Thread(target=self._capture_logs, daemon=True)
+        self._log_thread.start()
         last_error: Exception | None = None
         for _ in range(240):
             if self._process.poll() is not None:
-                raise RuntimeError("隔离 Worker 提前退出：" + "".join(self._log_lines[-12:]))
+                # stdout reaches EOF when the process exits. Briefly join the reader
+                # so the exception reliably includes the final startup diagnostics.
+                if self._log_thread is not None:
+                    self._log_thread.join(timeout=0.5)
+                with self._log_lock:
+                    recent = "".join(self._log_lines[-12:])
+                raise RuntimeError("隔离 Worker 提前退出：" + recent)
             try:
                 self._client.health()
                 return
@@ -141,7 +152,10 @@ class WorkerManager:
         if process is None or process.stdout is None:
             return
         for line in process.stdout:
-            with self._lock:
+            # Log capture must not wait for the lifecycle lock: _start_locked holds
+            # it while polling health, and a noisy failing worker could otherwise
+            # fill the stdout pipe before its diagnostics become readable.
+            with self._log_lock:
                 self._log_lines.append(line)
                 if len(self._log_lines) > 500:
                     del self._log_lines[:100]
@@ -161,6 +175,7 @@ class WorkerManager:
         self._process = None
         self._client = None
         self._signature = None
+        self._log_thread = None
 
 
 def _free_port() -> int:

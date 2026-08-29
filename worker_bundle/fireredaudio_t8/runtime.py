@@ -46,6 +46,7 @@ class RuntimeState:
     device: str | None = None
     decoder_loaded: bool = False
     memory_mode: str | None = None
+    requested_acceleration_mode: str | None = None
     acceleration_mode: str | None = None
     loading: bool = False
     active_task: str | None = None
@@ -109,7 +110,11 @@ class FireRedAudioRuntime:
                 "comfy-kitchen",
             )
         }
-        requested_acceleration = data.get("acceleration_mode") or "auto_safe"
+        requested_acceleration = (
+            data.get("requested_acceleration_mode")
+            or data.get("acceleration_mode")
+            or "auto_safe"
+        )
         capabilities = probe_acceleration(data.get("device") or None)
         selection = (
             dict(getattr(self._engine, "acceleration", {}) or {})
@@ -136,6 +141,17 @@ class FireRedAudioRuntime:
                 "evictions": 0,
                 "condition_encode_seconds": 0.0,
             }
+        )
+        package_info: dict[str, Any] = {}
+        if data.get("model_root"):
+            try:
+                package_info = model_package_info(str(data["model_root"]))
+            except Exception:
+                logger.debug("Unable to read model package metadata for status", exc_info=True)
+        gpus = gpu_inventory(
+            full_gpu_min_free_bytes=package_info.get("recommended_min_vram_bytes"),
+            active_device=data.get("device") if data.get("loaded") else None,
+            active_memory_mode=data.get("memory_mode") if data.get("loaded") else None,
         )
         data.update(
             {
@@ -168,7 +184,7 @@ class FireRedAudioRuntime:
                         "host_independent": True,
                     },
                 },
-                "gpus": gpu_inventory(),
+                "gpus": gpus,
                 "model_quantization": (
                     dict(
                         getattr(
@@ -299,7 +315,7 @@ class FireRedAudioRuntime:
             and self._engine is not None
             and self._state.model_root == requested_root
             and self._state.device == device
-            and self._state.acceleration_mode == acceleration_mode
+            and self._state.requested_acceleration_mode == acceleration_mode
             and (self._state.decoder_loaded or not require_decoder)
         ):
             # AUTO is a load-time decision. Recomputing it while the already-loaded
@@ -318,7 +334,7 @@ class FireRedAudioRuntime:
             self._engine is not None
             and self._state.model_root == requested_root
             and self._state.device == device
-            and self._state.acceleration_mode == acceleration_mode
+            and self._state.requested_acceleration_mode == acceleration_mode
             and (
                 self._state.memory_mode == resolved_memory_mode
                 or (not require_decoder and self._state.decoder_loaded)
@@ -340,13 +356,18 @@ class FireRedAudioRuntime:
                 memory_mode=resolved_memory_mode,
                 acceleration_mode=acceleration_mode,
             )
+            effective_acceleration = str(
+                (getattr(self._engine, "acceleration", {}) or {}).get("effective")
+                or acceleration_mode
+            )
             self._update_state(
                 loaded=True,
                 model_root=requested_root,
                 device=device,
                 decoder_loaded=require_decoder,
                 memory_mode=resolved_memory_mode,
-                acceleration_mode=acceleration_mode,
+                requested_acceleration_mode=acceleration_mode,
+                acceleration_mode=effective_acceleration,
                 quantization_profile=str(quantization.get("profile") or "unknown"),
                 quantization_format=str(quantization.get("format") or "unknown"),
             )
@@ -448,26 +469,58 @@ class FireRedAudioRuntime:
             or self._engine is None
         ):
             return None
-        restore = getattr(self._engine, "restore_generation_model_device", None)
-        if not callable(restore):
-            return None
         resident = getattr(self._engine, "generation_model_is_resident", None)
         try:
-            if callable(resident) and bool(resident()):
-                return True
-            self._progress(
-                "model_residency",
-                0.985,
-                "正在恢复主模型到 GPU，方便下一次任务",
+            if not callable(resident) or not bool(resident()):
+                self._progress(
+                    "model_residency",
+                    0.985,
+                    "正在恢复主模型到 GPU，方便下一次任务",
+                )
+            self._check_cancel()
+            recovered = self._recover_generation_residency(
+                device=device,
+                release_after=release_after,
             )
             self._check_cancel()
-            restore()
-            self._check_cancel()
-            return bool(resident()) if callable(resident) else True
+            return recovered
         except TaskCancelledError:
             raise
         except Exception:
             logger.warning("Failed to restore the generation model residency", exc_info=True)
+            return False
+
+    def _recover_generation_residency(
+        self,
+        *,
+        device: str,
+        release_after: bool,
+    ) -> bool | None:
+        """Best-effort repair used after failures, including cancellation.
+
+        Unlike the normal completion path this method intentionally does not check
+        the cancellation event: cleanup must still park the decoder and restore a
+        reusable sequential engine after the task has been cancelled.
+        """
+        if (
+            release_after
+            or not device.startswith("cuda")
+            or self._state.memory_mode != "sequential"
+            or self._engine is None
+        ):
+            return None
+        restore = getattr(self._engine, "restore_generation_model_device", None)
+        if not callable(restore):
+            return None
+        try:
+            restore()
+            resident = getattr(self._engine, "generation_model_is_resident", None)
+            return bool(resident()) if callable(resident) else True
+        except Exception:
+            logger.warning(
+                "Failed to recover the sequential model/decoder device state",
+                exc_info=True,
+            )
             return False
 
     def infer(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -547,6 +600,10 @@ class FireRedAudioRuntime:
                     )
                 return result
             except Exception as exc:
+                self._recover_generation_residency(
+                    device=device,
+                    release_after=release_after,
+                )
                 if isinstance(exc, TaskCancelledError):
                     self._progress("cancelled", self._state.progress, "任务已取消")
                 else:
@@ -723,6 +780,10 @@ class FireRedAudioRuntime:
                     "performance": performance,
                 }
             except Exception as exc:
+                self._recover_generation_residency(
+                    device=device,
+                    release_after=release_after,
+                )
                 if isinstance(exc, TaskCancelledError):
                     self._progress("cancelled", self._state.progress, "批量任务已取消")
                 else:

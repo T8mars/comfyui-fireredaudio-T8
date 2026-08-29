@@ -60,12 +60,33 @@ def search_roots() -> list[Path]:
 
 
 def discover_models() -> dict[str, Path]:
-    found: dict[str, Path] = {}
-    for base in search_roots():
-        candidates = [base, *[item for item in base.iterdir() if item.is_dir()]]
+    matches: list[Path] = []
+    seen: set[Path] = set()
+    for base in sorted(search_roots(), key=lambda item: str(item).lower()):
+        candidates = [
+            base,
+            *sorted(
+                (item for item in base.iterdir() if item.is_dir()),
+                key=lambda item: item.name.lower(),
+            ),
+        ]
         for candidate in candidates:
             if (candidate / "FireRedAudio" / "config.json").is_file():
-                found[candidate.name] = candidate.resolve()
+                resolved = candidate.resolve()
+                if resolved not in seen:
+                    seen.add(resolved)
+                    matches.append(resolved)
+    name_counts: dict[str, int] = {}
+    for candidate in matches:
+        name_counts[candidate.name] = name_counts.get(candidate.name, 0) + 1
+    found: dict[str, Path] = {}
+    for candidate in matches:
+        label = (
+            candidate.name
+            if name_counts[candidate.name] == 1
+            else f"{candidate.name} · {candidate}"
+        )
+        found[label] = candidate
     return dict(sorted(found.items()))
 
 
