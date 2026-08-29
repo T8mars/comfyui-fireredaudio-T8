@@ -133,6 +133,11 @@ def handle_project_request(
             "voice": store.upsert_voice_profile(_mapping(payload.get("voice"))),
             "project": store.snapshot(),
         }
+    if path == "/v1/project/voices/delete":
+        return {
+            "deleted": store.delete_voice_profile(_required(payload, "voice_profile_id")),
+            "project": store.snapshot(),
+        }
     if path == "/v1/project/casting/list":
         return {"casting": store.casting_readiness(), "project": store.snapshot()}
     if path == "/v1/project/casting/map":
@@ -733,7 +738,16 @@ def _run_project_queue(store: ProjectStore, runtime: Any, payload: dict[str, Any
     maximum = max(1, min(1000, int(payload.get("max_items", 1000))))
     stop_on_error = bool(payload.get("stop_on_error", False))
     adopt = bool(payload.get("adopt", False))
-    queued = store.list_jobs(["queued"])[:maximum]
+    queued_jobs = store.list_jobs(["queued"])
+    requested_job_ids = [
+        str(value) for value in (payload.get("job_ids") or []) if str(value)
+    ] if isinstance(payload.get("job_ids"), list) else []
+    if requested_job_ids:
+        queued_by_id = {str(job["id"]): job for job in queued_jobs}
+        queued = [queued_by_id[job_id] for job_id in requested_job_ids if job_id in queued_by_id]
+    else:
+        queued = queued_jobs
+    queued = queued[:maximum]
     latent_batch_size = max(1, min(32, int(payload.get("latent_batch_size", 8))))
     if (
         len(queued) > 1
@@ -756,12 +770,11 @@ def _run_project_queue(store: ProjectStore, runtime: Any, payload: dict[str, Any
         if store.queue_control()["paused"]:
             break
         job_id = str(job["id"])
-        if store.get_job(job_id)["status"] != "queued":
+        if store.claim_queued_job(job_id) is None:
             continue
         scratch = safe_project_path(store.root, Path("cache") / "jobs" / f"{job_id}.wav")
         scratch.parent.mkdir(parents=True, exist_ok=True)
         try:
-            store.update_job(job_id, status="validating", stage="generate", error="")
             request = _queue_inference_request(store, job, payload, model_root, scratch)
             store.update_job(job_id, status="running", stage="generate")
             generated = runtime.infer(request)
@@ -830,12 +843,11 @@ def _run_project_queue_latent_batch(
             if store.queue_control()["paused"]:
                 break
             job_id = str(job["id"])
-            if store.get_job(job_id)["status"] != "queued":
+            if store.claim_queued_job(job_id) is None:
                 continue
             scratch = safe_project_path(store.root, Path("cache") / "jobs" / f"{job_id}.wav")
             scratch.parent.mkdir(parents=True, exist_ok=True)
             try:
-                store.update_job(job_id, status="validating", stage="generate", error="")
                 request = _queue_inference_request(store, job, payload, model_root, scratch)
                 store.update_job(job_id, status="running", stage="generate")
                 prepared.append((job, request, scratch))

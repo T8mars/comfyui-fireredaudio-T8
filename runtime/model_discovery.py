@@ -5,11 +5,33 @@ import json
 from pathlib import Path
 
 MISSING_MODEL_OPTION = "未找到模型（请运行 scripts/download_models.py）"
+LOCAL_MANIFEST_NAMES = ("fireredaudio-model.json", "model-package.json")
 
 
 def manifest() -> dict:
     path = Path(__file__).resolve().parents[1] / "manifests" / "model_firered_audio.json"
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def local_manifest(root: Path) -> dict | None:
+    """Return model-package metadata written by the T8 conversion tools, if present."""
+    for name in LOCAL_MANIFEST_NAMES:
+        path = root / name
+        if not path.is_file():
+            continue
+        try:
+            definition = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"模型清单无法读取：{path.name}：{exc}") from exc
+        if not isinstance(definition.get("files"), dict):
+            raise ValueError(f"模型清单缺少 files：{path.name}")
+        return definition
+    return None
+
+
+def validation_manifest(root: Path) -> dict:
+    """Prefer an immutable local package manifest over the upstream BF16 manifest."""
+    return local_manifest(root) or manifest()
 
 
 def register_model_paths() -> None:
@@ -62,7 +84,7 @@ def resolve_model(name: str, custom_path: str = "") -> Path:
 
 
 def validate_sizes(root: Path, profile: str = "full") -> dict:
-    definition = manifest()
+    definition = validation_manifest(root)
     issues: list[dict] = []
     checked = 0
     for relative, metadata in definition["files"].items():
@@ -74,11 +96,18 @@ def validate_sizes(root: Path, profile: str = "full") -> dict:
             issues.append({"path": relative, "problem": "missing"})
         elif target.stat().st_size != int(metadata["size"]):
             issues.append({"path": relative, "problem": "size", "expected": metadata["size"], "actual": target.stat().st_size})
-    return {"valid": not issues, "checked_files": checked, "issues": issues}
+    return {
+        "valid": not issues,
+        "checked_files": checked,
+        "issues": issues,
+        "model_profile": definition.get("profile", "upstream-bf16"),
+        "model_format": definition.get("format", "safetensors-bf16"),
+        "stable": bool(definition.get("stable", True)),
+    }
 
 
 def fingerprint(root: Path) -> str:
-    definition = manifest()
+    definition = validation_manifest(root)
     digest = hashlib.sha256(str(root).encode("utf-8"))
     for relative in definition["files"]:
         target = root / relative

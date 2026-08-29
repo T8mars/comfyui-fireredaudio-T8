@@ -26,6 +26,11 @@ logger = logging.getLogger("fireredaudio_t8.worker")
 
 class WorkerServer(ThreadingHTTPServer):
     daemon_threads = True
+    # The creator workspace refreshes several independent project panels in
+    # parallel.  HTTPServer's default backlog is only 5, which can make a
+    # healthy Worker refuse part of that burst on Windows immediately after a
+    # reconnect.  Keep enough headroom for UI refreshes and queued retries.
+    request_queue_size = 64
 
     def __init__(self, address: tuple[str, int], token: str, debug: bool = False):
         super().__init__(address, WorkerRequestHandler)

@@ -9,7 +9,9 @@ from transformers.models.qwen3_5 import modeling_qwen3_5 as qwen3_5
 
 from .acceleration import AccelerationSelection, resolve_acceleration
 from .configuration_fireredaudio import FireRedAudioConfig
+from .convrot import FORMAT as CONVROT_FORMAT, load_convrot_pretrained
 from .modeling_fireredaudio import FireRedAudioForCausalLM
+from .quantization import read_quantization_metadata, stable_acceleration_mode
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,23 @@ def load_fireredaudio(
         A FireRedAudioForCausalLM in eval mode.
     """
     config = FireRedAudioConfig.from_pretrained(model_name_or_path)
-    selection = resolve_acceleration(acceleration_mode, device)
+    quantization = read_quantization_metadata(model_name_or_path)
+    selected_mode, quantization_fallback = stable_acceleration_mode(
+        acceleration_mode, model_name_or_path
+    )
+    selection = resolve_acceleration(selected_mode, device)
+    if quantization_fallback:
+        selection = AccelerationSelection(
+            requested=str(acceleration_mode),
+            effective=selection.effective,
+            attention_backend=selection.attention_backend,
+            use_fla=selection.use_fla,
+            use_liger=selection.use_liger,
+            use_torch_compile=False,
+            use_deepspeed=False,
+            available=selection.available,
+            reason=f"{quantization_fallback}；{selection.reason}",
+        )
     _configure_qwen(selection)
     attn = selection.attention_backend
 
@@ -48,9 +66,16 @@ def load_fireredaudio(
     config.audio_encoder_config._attn_implementation = attn
     config.red_vae_config._attn_implementation = attn
 
-    model = FireRedAudioForCausalLM.from_pretrained(
-        model_name_or_path, config=config, dtype=dtype
-    )
+    if str(quantization.get("format", "")).lower() == CONVROT_FORMAT:
+        model = load_convrot_pretrained(
+            model_name_or_path,
+            config=config,
+            dtype=dtype,
+        )
+    else:
+        model = FireRedAudioForCausalLM.from_pretrained(
+            model_name_or_path, config=config, dtype=dtype
+        )
     model.eval()
     if device is not None:
         model.to(device)
@@ -59,6 +84,7 @@ def load_fireredaudio(
     if selection.use_deepspeed:
         _apply_deepspeed(model)
     model._fireredaudio_acceleration = selection.to_dict()
+    model._fireredaudio_quantization = quantization
     return model
 
 

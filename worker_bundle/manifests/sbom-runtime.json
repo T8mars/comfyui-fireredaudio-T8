@@ -55,6 +55,14 @@
       ]
     },
     {
+      "name": "comfy-kitchen",
+      "version": "0.2.31",
+      "license": "Apache-2.0",
+      "licenseFiles": [
+        "comfy_kitchen-0.2.31.dist-info/LICENSE"
+      ]
+    },
+    {
       "name": "deepspeed",
       "version": "0.17.5+e1560d84",
       "license": "Apache Software License 2.0",
@@ -448,6 +456,14 @@
       "licenseFiles": [
         "torch-2.8.0+cu128.dist-info/LICENSE",
         "torch-2.8.0+cu128.dist-info/NOTICE"
+      ]
+    },
+    {
+      "name": "torchao",
+      "version": "0.16.0",
+      "license": "UNKNOWN",
+      "licenseFiles": [
+        "torchao-0.16.0.dist-info/licenses/LICENSE"
       ]
     },
     {

@@ -12,6 +12,10 @@
 
 FireRedAudio acknowledges Qwen3.5, Whisper-large-v3, x-transformers, and vocos. Their packages and binary distributions retain their respective metadata and license files in the packaged Python environment.
 
+## Quantization runtime
+
+The optional INT8 model formats use TorchAO 0.16.0 and Comfy-Kitchen 0.2.31. TorchAO supplies the stable weight-only INT8 path. Comfy-Kitchen supplies the experimental ConvRot tensor layout and runtime; on Windows the package prefers its Triton/eager backends when the optional CUDA extension is not compatible with the installed display driver. Their license and package metadata remain in the packaged Python environment and generated SBOM.
+
 ## Distribution runtime
 
 The Windows portable build includes CPython, PyTorch, Torchaudio, Transformers, Electron, and FFmpeg components. TorchCodec is deliberately omitted on Windows because the pinned release has no `win_amd64` wheel. `manifests/sbom-runtime.json` is generated from the exact packaged Python environment; Python distribution and package license files remain beside their binaries in packaged resources. Optional acceleration wheels are distributed only after their exact Python/Torch/CUDA ABI and license have been audited.

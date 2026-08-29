@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.0
+
+- 自动识别桌面转换工具生成的 `fireredaudio-model.json`，量化/瘦身模型不再按官方 BF16 文件尺寸误报损坏。
+- 支持 `bf16-slim`、推荐 `int8-wo-safe`、实验 `int8-wo-extended` 与 `int8-convrot-experimental`；GGUF 不在支持范围内。
+- 隔离 Worker 固定加入 `torchao==0.16.0` 与 `comfy-kitchen==0.2.31`，不修改 ComfyUI 宿主环境。
+- 同步量化模型 CUDA↔CPU 安全搬运和 AUTO 首次加载后保持显存模式的修复。
+- 本地模型清单参与大小校验与模型指纹，slim `RedAE_decoder/model.safetensors` 可直接用于完整生成任务。
+- 新增模型清单/瘦身 decoder 单元测试；完整节点测试、Worker bundle 和 ZIP CRC 通过。
+
 ## 0.18.0
 
 - 默认模型下载源切换到 `t8star/Firered-Audio-Comfy`，与桌面整合包共用同一份已完成全量 SHA-256 验收的 Lite/Full 权重。

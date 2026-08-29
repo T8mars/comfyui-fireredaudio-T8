@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-RUNTIME_VERSION = "0.10.0"
+RUNTIME_VERSION = "0.11.0"
 CODE_REVISION = "88b826378023eb9a49b297214568398a300e5c32"
 MODEL_REVISION = "ffd450cf336a929f4ceb1eaaff4c7ba4e4af34bb"
 MODEL_REPOSITORY = "t8star/Firered-Audio-Comfy"

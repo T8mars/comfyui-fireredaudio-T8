@@ -10,6 +10,9 @@ from .constants import GENERATION_TASKS
 from .errors import ModelValidationError
 
 
+LOCAL_MANIFEST_NAMES = ("fireredaudio-model.json", "model-package.json")
+
+
 @dataclass(frozen=True)
 class ValidationIssue:
     path: str
@@ -51,6 +54,15 @@ def load_manifest(path: str | Path | None = None) -> dict[str, Any]:
     return json.loads(target.read_text(encoding="utf-8"))
 
 
+def local_manifest_path(root: str | Path) -> Path | None:
+    normalized = normalize_model_root(root)
+    for name in LOCAL_MANIFEST_NAMES:
+        candidate = normalized / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def normalize_model_root(path: str | Path) -> Path:
     root = Path(path).expanduser().resolve()
     if (root / "FireRedAudio" / "config.json").is_file():
@@ -62,7 +74,51 @@ def normalize_model_root(path: str | Path) -> Path:
 
 def model_paths(root: str | Path) -> tuple[Path, Path]:
     normalized = normalize_model_root(root)
-    return normalized / "FireRedAudio", normalized / "RedAE_decoder" / "model.pt"
+    decoder_root = normalized / "RedAE_decoder"
+    decoder = next(
+        (
+            candidate
+            for candidate in (
+                decoder_root / "model.safetensors",
+                decoder_root / "model.pt",
+            )
+            if candidate.is_file()
+        ),
+        decoder_root / "model.pt",
+    )
+    return normalized / "FireRedAudio", decoder
+
+
+def model_package_info(root: str | Path) -> dict[str, Any]:
+    """Describe the selected external model without loading tensor weights."""
+
+    normalized = normalize_model_root(root)
+    local_manifest = local_manifest_path(normalized)
+    definition = load_manifest(local_manifest) if local_manifest else load_manifest()
+    quant_path = normalized / "FireRedAudio" / "fireredaudio_quantization.json"
+    quantization = (
+        json.loads(quant_path.read_text(encoding="utf-8"))
+        if quant_path.is_file()
+        else {
+            "profile": "bf16-upstream",
+            "format": "bfloat16",
+            "stable": True,
+        }
+    )
+    profiles = definition.get("profiles") or {}
+    full = profiles.get("full") if isinstance(profiles, dict) else None
+    recommended = None
+    if isinstance(full, dict):
+        value = full.get("recommendedMinVramBytes")
+        if value is not None:
+            recommended = int(value)
+    return {
+        "root": str(normalized),
+        "manifest": str(local_manifest) if local_manifest else str(manifest_path()),
+        "local_manifest": bool(local_manifest),
+        "quantization": quantization,
+        "recommended_min_vram_bytes": recommended,
+    }
 
 
 def required_file_entries(
@@ -93,7 +149,11 @@ def validate_model_dir(
     manifest: dict[str, Any] | None = None,
 ) -> ValidationReport:
     normalized = normalize_model_root(root)
-    definition = manifest or load_manifest()
+    if manifest is not None:
+        definition = manifest
+    else:
+        local_manifest = local_manifest_path(normalized)
+        definition = load_manifest(local_manifest) if local_manifest else load_manifest()
     issues: list[ValidationIssue] = []
     checked = 0
     total = 0
@@ -131,3 +191,20 @@ def validate_model_dir(
 
 def profile_for_task(task: str) -> str:
     return "full" if task in GENERATION_TASKS else "lite"
+
+
+__all__ = [
+    "LOCAL_MANIFEST_NAMES",
+    "ValidationIssue",
+    "ValidationReport",
+    "load_manifest",
+    "local_manifest_path",
+    "manifest_path",
+    "model_package_info",
+    "model_paths",
+    "normalize_model_root",
+    "profile_for_task",
+    "required_file_entries",
+    "sha256_file",
+    "validate_model_dir",
+]

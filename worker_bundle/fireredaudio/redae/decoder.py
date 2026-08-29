@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
+from pathlib import Path
 from transformers import Qwen3Config, Qwen3Model
 
 
@@ -266,13 +267,34 @@ class PretrainedRedAEAudioDecoderV1(RedAEAudioDecoderV1):
     @classmethod
     def from_pretrained(cls, config: PretrainedRedAEDecoderConfig, ckpt_path:str)->'PretrainedRedAEAudioDecoderV1':
         decoder = cls.from_config(config)
-        sd = torch.load(ckpt_path, weights_only=True, map_location='cpu')['model']
-        # Skip semantic_proj params
+        checkpoint = Path(ckpt_path)
+        if checkpoint.suffix.lower() == ".safetensors":
+            from safetensors.torch import load_file
+
+            raw = load_file(str(checkpoint), device="cpu")
+        else:
+            raw = torch.load(
+                checkpoint,
+                weights_only=True,
+                mmap=True,
+                map_location="cpu",
+            )
+            if isinstance(raw, dict) and isinstance(raw.get("model"), dict):
+                raw = raw["model"]
+        if not isinstance(raw, dict):
+            raise ValueError(f"RedAE decoder checkpoint is not a tensor mapping: {checkpoint}")
+        # Full upstream training checkpoints use ``decoder.*`` keys and also carry
+        # the encoder, discriminators and optimizer states.  Slim inference
+        # checkpoints may already contain decoder-local keys.
+        prefixed = any(str(key).startswith("decoder.") for key in raw)
         sd = {
-            k.removeprefix('decoder.'): v 
-            for k, v in sd.items() 
-            if k.startswith('decoder.')
+            (str(key).removeprefix("decoder.") if prefixed else str(key)): value
+            for key, value in raw.items()
+            if isinstance(value, torch.Tensor)
+            and (not prefixed or str(key).startswith("decoder."))
         }
+        if not sd:
+            raise ValueError(f"RedAE decoder checkpoint contains no decoder weights: {checkpoint}")
         decoder.load_state_dict(sd, strict=True)
         decoder.eval()
         return decoder

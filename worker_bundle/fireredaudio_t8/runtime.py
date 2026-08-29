@@ -25,7 +25,13 @@ from .long_audio import (
     render_vtt,
     split_pcm16_wav,
 )
-from .model_manager import model_paths, normalize_model_root, profile_for_task, validate_model_dir
+from .model_manager import (
+    model_package_info,
+    model_paths,
+    normalize_model_root,
+    profile_for_task,
+    validate_model_dir,
+)
 from .presets import apply_quality_preset
 from .system_info import gpu_inventory
 from fireredaudio.acceleration import probe_acceleration, resolve_acceleration
@@ -55,6 +61,8 @@ class RuntimeState:
     phase_elapsed_seconds: float = 0.0
     phase_timings: dict[str, float] = field(default_factory=dict)
     cold_start: bool | None = None
+    quantization_profile: str | None = None
+    quantization_format: str | None = None
 
 
 def _package_version(name: str) -> str | None:
@@ -97,6 +105,8 @@ class FireRedAudioRuntime:
                 "liger-kernel",
                 "triton-windows",
                 "deepspeed",
+                "torchao",
+                "comfy-kitchen",
             )
         }
         requested_acceleration = data.get("acceleration_mode") or "auto_safe"
@@ -159,6 +169,18 @@ class FireRedAudioRuntime:
                     },
                 },
                 "gpus": gpu_inventory(),
+                "model_quantization": (
+                    dict(
+                        getattr(
+                            getattr(self._engine, "model", None),
+                            "_fireredaudio_quantization",
+                            {},
+                        )
+                        or {}
+                    )
+                    if self._engine is not None
+                    else {}
+                ),
             }
         )
         return data
@@ -271,7 +293,27 @@ class FireRedAudioRuntime:
         # validation. Missing models therefore fail during "validating".
         self._progress("loading", 0.02, "正在加载模型")
         requested_root = str(root)
-        resolved_memory_mode = _resolve_memory_mode(memory_mode, device, require_decoder)
+        requested_memory_mode = str(memory_mode or "auto").strip().lower()
+        if (
+            requested_memory_mode == "auto"
+            and self._engine is not None
+            and self._state.model_root == requested_root
+            and self._state.device == device
+            and self._state.acceleration_mode == acceleration_mode
+            and (self._state.decoder_loaded or not require_decoder)
+        ):
+            # AUTO is a load-time decision. Recomputing it while the already-loaded
+            # model occupies VRAM makes the next task falsely see low free memory,
+            # unload a healthy full-GPU engine, and reload it as sequential.
+            return
+        package = model_package_info(root)
+        quantization = dict(package.get("quantization") or {})
+        resolved_memory_mode = _resolve_memory_mode(
+            requested_memory_mode,
+            device,
+            require_decoder,
+            recommended_min_vram_bytes=package.get("recommended_min_vram_bytes"),
+        )
         if (
             self._engine is not None
             and self._state.model_root == requested_root
@@ -305,6 +347,8 @@ class FireRedAudioRuntime:
                 decoder_loaded=require_decoder,
                 memory_mode=resolved_memory_mode,
                 acceleration_mode=acceleration_mode,
+                quantization_profile=str(quantization.get("profile") or "unknown"),
+                quantization_format=str(quantization.get("format") or "unknown"),
             )
         except Exception as exc:
             self._update_state(last_error=str(exc))
@@ -385,6 +429,47 @@ class FireRedAudioRuntime:
         except Exception:
             logger.debug("CUDA cache cleanup was unavailable", exc_info=True)
 
+    def _restore_generation_residency(
+        self,
+        *,
+        device: str,
+        release_after: bool,
+    ) -> bool | None:
+        """Restore the main model after sequential decoding without failing output.
+
+        ``None`` means the residency check does not apply.  A failed best-effort
+        transfer is reported in performance metadata but must not discard audio
+        that has already been generated and saved successfully.
+        """
+        if (
+            release_after
+            or not device.startswith("cuda")
+            or self._state.memory_mode != "sequential"
+            or self._engine is None
+        ):
+            return None
+        restore = getattr(self._engine, "restore_generation_model_device", None)
+        if not callable(restore):
+            return None
+        resident = getattr(self._engine, "generation_model_is_resident", None)
+        try:
+            if callable(resident) and bool(resident()):
+                return True
+            self._progress(
+                "model_residency",
+                0.985,
+                "正在恢复主模型到 GPU，方便下一次任务",
+            )
+            self._check_cancel()
+            restore()
+            self._check_cancel()
+            return bool(resident()) if callable(resident) else True
+        except TaskCancelledError:
+            raise
+        except Exception:
+            logger.warning("Failed to restore the generation model residency", exc_info=True)
+            return False
+
     def infer(self, request: dict[str, Any]) -> dict[str, Any]:
         request = apply_quality_preset(request)
         task = str(request.get("task", "")).strip()
@@ -429,6 +514,10 @@ class FireRedAudioRuntime:
                 self._progress("running", 0.04, "模型就绪，开始推理")
                 result = self._run_task(task, request)
                 self._check_cancel()
+                gpu_resident = self._restore_generation_residency(
+                    device=device,
+                    release_after=release_after,
+                )
                 with self._state_lock:
                     self._state.completed_tasks += 1
                 self._progress("complete", 1.0, "任务完成")
@@ -449,6 +538,8 @@ class FireRedAudioRuntime:
                     acceleration_mode=self._state.acceleration_mode,
                     output_duration_seconds=result.get("duration_seconds"),
                 )
+                if gpu_resident is not None:
+                    result["performance"]["gpu_resident_after_task"] = gpu_resident
                 if result.get("metadata_path"):
                     _augment_output_metadata(
                         Path(str(result["metadata_path"])),
@@ -487,6 +578,7 @@ class FireRedAudioRuntime:
         device = _resolve_device(str(first.get("device") or "auto"))
         memory_mode = str(first.get("memory_mode") or "auto")
         acceleration_mode = str(first.get("acceleration_mode") or "auto_safe")
+        release_after = any(bool(request.get("release_after", False)) for request in normalized)
         for request in normalized[1:]:
             if str(request.get("model_root") or "") != str(model_root):
                 raise WorkerProtocolError("同一批次必须使用相同模型目录")
@@ -586,6 +678,10 @@ class FireRedAudioRuntime:
                                 "error": f"{type(exc).__name__}: {exc}",
                             }
                         )
+                gpu_resident = self._restore_generation_residency(
+                    device=device,
+                    release_after=release_after,
+                )
                 elapsed = round(time.perf_counter() - started, 3)
                 self._progress("complete", 1.0, "批量 latent 生成与统一解码完成")
                 performance = _performance_report(
@@ -606,6 +702,8 @@ class FireRedAudioRuntime:
                         else "resident_sequential_batch"
                     ),
                 )
+                if gpu_resident is not None:
+                    performance["gpu_resident_after_task"] = gpu_resident
                 for outcome in outcomes:
                     if not outcome.get("ok"):
                         continue
@@ -640,7 +738,7 @@ class FireRedAudioRuntime:
                     cancel_requested=False,
                 )
                 self._cancel_event.clear()
-                if any(bool(request.get("release_after", False)) for request in normalized):
+                if release_after:
                     self._unload_locked(preserve_error=True)
                 self._reset_trace()
 
@@ -942,7 +1040,13 @@ def _parse_json_answer(value: str) -> Any | None:
     return None
 
 
-def _resolve_memory_mode(requested: str, device: str, require_decoder: bool) -> str:
+def _resolve_memory_mode(
+    requested: str,
+    device: str,
+    require_decoder: bool,
+    *,
+    recommended_min_vram_bytes: int | None = None,
+) -> str:
     if not require_decoder:
         return "full_gpu"
     if requested in {"full_gpu", "sequential", "decoder_cpu"}:
@@ -956,7 +1060,8 @@ def _resolve_memory_mode(requested: str, device: str, require_decoder: bool) -> 
 
         index = torch.device(device).index or 0
         free, _total = torch.cuda.mem_get_info(index)
-        return "sequential" if free < 36 * 1024**3 else "full_gpu"
+        threshold = int(recommended_min_vram_bytes or 36 * 1024**3)
+        return "sequential" if free < threshold else "full_gpu"
     except Exception:
         return "sequential"
 

@@ -19,6 +19,8 @@ EXPECTED = {
     "torch": "2.8.0",
     "torchaudio": "2.8.0",
     "transformers": "5.8.0",
+    "torchao": "0.16.0",
+    "comfy-kitchen": "0.2.31",
     "numpy": "2.2.6",
     "einops": "0.8.2",
 }

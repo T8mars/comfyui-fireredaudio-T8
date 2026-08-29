@@ -39,6 +39,41 @@ class FireRedAudioForCausalLM(PreTrainedModel):
 
         self.post_init()
 
+    def get_input_embeddings(self):
+        """Expose the delegated Qwen embedding for HF quantizers and tooling."""
+
+        return self.backbone_llm.get_input_embeddings()
+
+    def set_input_embeddings(self, value):
+        self.backbone_llm.set_input_embeddings(value)
+
+    def get_output_embeddings(self):
+        return self.backbone_llm.get_output_embeddings()
+
+    def set_output_embeddings(self, value):
+        self.backbone_llm.set_output_embeddings(value)
+
+    def _initialize_missing_keys(self, is_quantized: bool) -> None:
+        """Keep deserialized TorchAO tensors out of HF's missing-key initializer.
+
+        Transformers 5.8 reconstructs TorchAO safetensor subclasses but does not
+        mark those parameters as initialized.  The generic finalizer then calls
+        ``normal_`` on the INT8 subclass and fails.  Mark only reconstructed
+        TorchAO parameters; genuinely missing ordinary tensors still follow the
+        upstream initialization and load-report path.
+        """
+
+        if is_quantized:
+            for module in self.modules():
+                torchao_parameter = False
+                for parameter in module.parameters(recurse=False):
+                    if type(parameter).__module__.startswith("torchao"):
+                        parameter._is_hf_initialized = True
+                        torchao_parameter = True
+                if torchao_parameter:
+                    module._is_hf_initialized = True
+        super()._initialize_missing_keys(is_quantized)
+
     def train(self, mode: bool = True):
         super().train(mode)
         self.red_vae.eval()

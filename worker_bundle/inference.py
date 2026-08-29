@@ -45,6 +45,75 @@ import torch
 import torchaudio
 
 from transformers import AutoTokenizer, GenerationConfig
+
+
+def _is_wrapper_tensor_subclass(value: torch.Tensor) -> bool:
+    tensor_type = type(value)
+    return callable(getattr(tensor_type, "__tensor_flatten__", None)) and callable(
+        getattr(tensor_type, "__tensor_unflatten__", None)
+    )
+
+
+def _move_wrapper_tensor(value: torch.Tensor, device: torch.device | str) -> torch.Tensor:
+    """Rebuild a wrapper tensor on another device without cross-device aliasing.
+
+    PyTorch 2.8 ``Module.to`` can attempt to alias the old storage after a TorchAO
+    tensor-subclass conversion. Reconstructing through ``__tensor_flatten__`` is
+    the supported wrapper-subclass transformation and also works for nested
+    Comfy-Kitchen layouts.
+    """
+
+    if not _is_wrapper_tensor_subclass(value):
+        return value.to(device)
+    from torch.utils._python_dispatch import transform_subclass
+
+    return transform_subclass(
+        value,
+        lambda _name, inner: _move_wrapper_tensor(inner, device),
+    )
+
+
+def _move_inference_module(module: torch.nn.Module, device: torch.device | str) -> None:
+    """Move an inference module while preserving TorchAO/ConvRot tensor subclasses."""
+
+    try:
+        parameters = list(module.parameters())
+        buffers = list(module.buffers())
+    except (AttributeError, TypeError):
+        module.to(device)
+        return
+    if not any(_is_wrapper_tensor_subclass(value) for value in (*parameters, *buffers)):
+        module.to(device)
+        return
+
+    parameter_cache: dict[int, torch.nn.Parameter] = {}
+    buffer_cache: dict[int, torch.Tensor] = {}
+    with torch.no_grad():
+        for child in module.modules():
+            for name, parameter in tuple(child._parameters.items()):
+                if parameter is None:
+                    continue
+                cache_key = id(parameter)
+                moved_parameter = parameter_cache.get(cache_key)
+                if moved_parameter is None:
+                    moved_value = _move_wrapper_tensor(parameter, device)
+                    moved_parameter = torch.nn.Parameter(
+                        moved_value,
+                        requires_grad=parameter.requires_grad,
+                    )
+                    if parameter.grad is not None:
+                        moved_parameter.grad = _move_wrapper_tensor(parameter.grad, device)
+                    parameter_cache[cache_key] = moved_parameter
+                child._parameters[name] = moved_parameter
+            for name, buffer in tuple(child._buffers.items()):
+                if buffer is None:
+                    continue
+                cache_key = id(buffer)
+                moved_buffer = buffer_cache.get(cache_key)
+                if moved_buffer is None:
+                    moved_buffer = _move_wrapper_tensor(buffer, device)
+                    buffer_cache[cache_key] = moved_buffer
+                child._buffers[name] = moved_buffer
 from transformers.generation.stopping_criteria import StoppingCriteria, StoppingCriteriaList
 
 from fireredaudio.audio_encoder.processor import FireRedAudioProcessor
@@ -619,7 +688,7 @@ class FireRedAudioInference:
             self._progress_callback("decoder_transfer", 0.9, "正在切换到音频解码器")
             self._cancel_check()
             vae_latents = vae_latents.detach()
-            self.model.to("cpu")
+            _move_inference_module(self.model, "cpu")
             gc.collect()
             torch.cuda.empty_cache()
             self.vae_decoder.to(self.device)
@@ -719,7 +788,7 @@ class FireRedAudioInference:
                     deferred.append(exc)
 
             original_progress("batch_decoder_transfer", 0.78, "批量 latent 完成，正在切换解码器")
-            self.model.to("cpu")
+            _move_inference_module(self.model, "cpu")
             gc.collect()
             torch.cuda.empty_cache()
             assert self.vae_decoder is not None
@@ -747,14 +816,29 @@ class FireRedAudioInference:
         finally:
             self._progress_callback = original_progress
 
-    def _ensure_generation_model_device(self) -> None:
-        """Restore the main model after sequential decoder offload."""
+    def generation_model_is_resident(self) -> bool:
+        """Return whether the main generation model is on its configured device."""
         try:
             current = next(self.model.parameters()).device
         except StopIteration:
-            return
-        if current != self.device:
-            self.model.to(self.device)
+            return True
+        return current == self.device
+
+    def restore_generation_model_device(self) -> bool:
+        """Keep the main model GPU-resident after sequential decoder offload.
+
+        Returns ``True`` when a transfer was required.  The runtime uses this
+        public hook after a successful task so AUTO/sequential mode is ready for
+        the next request instead of appearing idle with the model left on CPU.
+        """
+        if self.generation_model_is_resident():
+            return False
+        _move_inference_module(self.model, self.device)
+        return True
+
+    def _ensure_generation_model_device(self) -> None:
+        """Restore the main model before generation when a prior task offloaded it."""
+        self.restore_generation_model_device()
 
     # ------------------------------------------------------ understanding tasks
     @torch.inference_mode()

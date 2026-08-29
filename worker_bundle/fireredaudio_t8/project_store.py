@@ -17,7 +17,7 @@ from .audio_compare import prepare_synchronized_ab
 from .errors import WorkerProtocolError
 
 
-PROJECT_SCHEMA_VERSION = 8
+PROJECT_SCHEMA_VERSION = 9
 PROJECT_SUFFIX = ".firered"
 PROJECT_DIRECTORIES = (
     "assets",
@@ -325,13 +325,23 @@ class ProjectStore:
         return path
 
     def upsert_voice_profile(self, value: dict[str, Any]) -> dict[str, Any]:
-        profile_id = str(value.get("id") or uuid.uuid4())
+        profile_id = str(value.get("id") or "").strip()
         name = str(value.get("name") or "").strip()[:120]
         if not name:
             raise WorkerProtocolError("角色音色缺少 name")
         reference_asset_id = str(value.get("reference_asset_id") or "").strip() or None
         now = utc_now()
         with self.connection() as connection:
+            # Serialize the read-before-insert decision.  Without an immediate
+            # write lock concurrent desktop requests can all observe no match
+            # and create duplicate profiles for the same name.
+            connection.execute("BEGIN IMMEDIATE")
+            if not profile_id:
+                same_name = connection.execute(
+                    "SELECT id FROM voice_profiles WHERE name=? COLLATE NOCASE ORDER BY updated_at DESC LIMIT 1",
+                    (name,),
+                ).fetchone()
+                profile_id = str(same_name["id"]) if same_name is not None else str(uuid.uuid4())
             existing = connection.execute(
                 "SELECT created_at,reference_asset_id,transcript,language FROM voice_profiles WHERE id=?",
                 (profile_id,),
@@ -421,6 +431,92 @@ class ProjectStore:
             ).fetchall()
         return [_voice_dict(row) for row in rows]
 
+    def delete_voice_profile(self, profile_id: str) -> dict[str, Any]:
+        """Delete a project voice without deleting its imported source asset.
+
+        Generated audio is kept as recoverable project media, but any active line
+        mapping is cleared because it can no longer be reproduced from the deleted
+        voice profile.
+        """
+        voice_id = str(profile_id or "").strip()
+        if not voice_id:
+            raise WorkerProtocolError("缺少要删除的项目声音")
+        # Voice deletion clears reproducibility metadata and any timeline clips
+        # that reference its adopted takes.  Preserve the complete database and
+        # manifest first so hand-edited timing/gain/fades remain recoverable.
+        self.get_voice_profile(voice_id)
+        backup = self.create_script_backup(reason="before_voice_profile_delete")
+        now = utc_now()
+        with self.connection() as connection:
+            # Serialize against queue claims.  Either deletion cancels the
+            # still-queued job first, or a claimed validating/running job makes
+            # deletion fail safely; a cancelled job can never be resurrected.
+            connection.execute("BEGIN IMMEDIATE")
+            voice = connection.execute(
+                "SELECT * FROM voice_profiles WHERE id=?", (voice_id,)
+            ).fetchone()
+            if voice is None:
+                raise WorkerProtocolError(f"角色音色不存在：{voice_id}")
+            line_rows = connection.execute(
+                "SELECT id,speaker FROM script_lines WHERE archived=0 AND voice_profile_id=?",
+                (voice_id,),
+            ).fetchall()
+            active = connection.execute(
+                "SELECT COUNT(*) FROM jobs WHERE line_id IN "
+                "(SELECT id FROM script_lines WHERE archived=0 AND voice_profile_id=?) "
+                "AND status IN ('validating','running')",
+                (voice_id,),
+            ).fetchone()[0]
+            if int(active):
+                raise WorkerProtocolError("该声音仍有正在生成的任务，请等待或取消后再删除")
+            locked = connection.execute(
+                "SELECT COUNT(*) FROM takes WHERE locked=1 AND id IN "
+                "(SELECT current_take_id FROM script_lines WHERE archived=0 AND voice_profile_id=?)",
+                (voice_id,),
+            ).fetchone()[0]
+            if int(locked):
+                raise WorkerProtocolError("该声音仍被锁定成片使用，请先解锁对应采用版本再删除")
+            connection.execute(
+                "UPDATE jobs SET status='cancelled',error='项目声音已删除',updated_at=? "
+                "WHERE line_id IN (SELECT id FROM script_lines WHERE archived=0 AND voice_profile_id=?) "
+                "AND status IN ('queued','interrupted')",
+                (now, voice_id),
+            )
+            connection.execute(
+                "UPDATE takes SET status='candidate',locked=0 WHERE line_id IN "
+                "(SELECT id FROM script_lines WHERE archived=0 AND voice_profile_id=?)",
+                (voice_id,),
+            )
+            removed_timeline_clips = int(connection.execute(
+                "DELETE FROM timeline_clips WHERE line_id IN "
+                "(SELECT id FROM script_lines WHERE archived=0 AND voice_profile_id=?)",
+                (voice_id,),
+            ).rowcount)
+            connection.execute(
+                "UPDATE script_lines SET voice_profile_id=NULL,current_take_id=NULL,status='draft',dirty=1,updated_at=? "
+                "WHERE archived=0 AND voice_profile_id=?",
+                (now, voice_id),
+            )
+            connection.execute(
+                "UPDATE casting_roles SET voice_profile_id=NULL,voice_signature='',representative_take_id=NULL,"
+                "status='pending',confirmed_at=NULL,updated_at=? WHERE voice_profile_id=?",
+                (now, voice_id),
+            )
+            connection.execute("DELETE FROM voice_profiles WHERE id=?", (voice_id,))
+        affected_speakers = sorted({str(row["speaker"] or "旁白") for row in line_rows})
+        result = {
+            "id": voice_id,
+            "name": str(voice["name"]),
+            "affected_lines": len(line_rows),
+            "affected_speakers": affected_speakers,
+            "removed_timeline_clips": removed_timeline_clips,
+            "source_asset_preserved": bool(voice["reference_asset_id"]),
+            "backup_id": backup["id"],
+            "backup_path": backup["path"],
+        }
+        self._touch("voice_profile", voice_id, "deleted", result)
+        return result
+
     def get_voice_profile(self, profile_id: str) -> dict[str, Any]:
         with self.connection() as connection:
             row = connection.execute(
@@ -429,6 +525,33 @@ class ProjectStore:
         if row is None:
             raise WorkerProtocolError(f"角色音色不存在：{profile_id}")
         return _voice_dict(row)
+
+    def voice_profile_readiness(
+        self, profile_id: str, *, verify_hash: bool = False
+    ) -> dict[str, Any]:
+        """Check that a mapped voice has every input required by generation."""
+        voice = self.get_voice_profile(profile_id)
+        issues: list[str] = []
+        asset_id = str(voice.get("reference_asset_id") or "").strip()
+        if not asset_id:
+            issues.append("缺少参考音频")
+        if not str(voice.get("transcript") or "").strip():
+            issues.append("缺少参考音频逐字稿")
+        reference_path = ""
+        if asset_id:
+            try:
+                reference_path = str(
+                    self.resolve_asset_path(asset_id, verify_hash=verify_hash)
+                )
+            except WorkerProtocolError as exc:
+                issues.append(str(exc))
+        return {
+            "id": str(voice["id"]),
+            "name": str(voice["name"]),
+            "ready": not issues,
+            "issues": list(dict.fromkeys(issues)),
+            "reference_path": reference_path,
+        }
 
     def list_casting_roles(self) -> list[dict[str, Any]]:
         """Return the active script role matrix and its persisted director approval."""
@@ -459,6 +582,11 @@ class ProjectStore:
             mapped_ids = {str(row["voice_profile_id"] or "") for row in role_lines}
             mapped_voice_id = next(iter(mapped_ids)) if len(mapped_ids) == 1 else ""
             mapped_voice = voices.get(mapped_voice_id)
+            voice_readiness = (
+                self.voice_profile_readiness(mapped_voice_id, verify_hash=False)
+                if mapped_voice is not None
+                else {"ready": False, "issues": []}
+            )
             saved = casting.get(speaker)
             active_ids = {str(row["id"]) for row in role_lines}
             representative_line_id = (
@@ -497,23 +625,16 @@ class ProjectStore:
                 and mapped_voice_id
                 and str(saved["voice_profile_id"] or "") == mapped_voice_id
                 and str(saved["voice_signature"] or "") == signature
-                and representative_take is not None
-                and str(representative_take["id"]) == str(saved["representative_take_id"] or "")
-                and str(representative_take["status"]) == "adopted"
                 and mapped_voice is not None
-                and str(representative_take["created_at"]) >= str(mapped_voice["updated_at"])
+                and bool(voice_readiness["ready"])
             )
             issues: list[str] = []
             if len(mapped_ids) != 1 or not mapped_voice_id:
                 issues.append("该角色存在未映射或不一致的音色")
             elif mapped_voice is None:
                 issues.append("映射的音色档案不存在")
-            if representative_take is None:
-                issues.append("尚未生成代表句")
-            elif str(representative_take["voice_profile_id"] or "") != mapped_voice_id:
-                issues.append("代表句不是由当前音色生成")
-            elif mapped_voice is not None and str(representative_take["created_at"]) < str(mapped_voice["updated_at"]):
-                issues.append("音色参考已更新，需要重新生成代表句")
+            elif not voice_readiness["ready"]:
+                issues.extend(str(value) for value in voice_readiness["issues"])
             if not confirmed:
                 issues.append("导演尚未确认")
             take_value = None
@@ -530,9 +651,11 @@ class ProjectStore:
                     "voice_profile_id": mapped_voice_id or None,
                     "voice_name": None if mapped_voice is None else str(mapped_voice["name"]),
                     "voice_quality": {} if mapped_voice is None else _read_json(mapped_voice["quality_json"], {}),
+                    "voice_ready": bool(voice_readiness["ready"]),
                     "representative_line_id": representative_line_id,
                     "representative_text": str(representative_line["text"]),
                     "representative_take": take_value,
+                    "representative_optional": True,
                     "confirmed": confirmed,
                     "status": "confirmed" if confirmed else "pending",
                     "notes": "" if saved is None else str(saved["notes"] or ""),
@@ -655,8 +778,6 @@ class ProjectStore:
             return next(value for value in self.list_casting_roles() if value["speaker"] == role)
         now = utc_now()
         take_id = str(representative_take_id or "").strip()
-        if not take_id:
-            raise WorkerProtocolError("请先生成并选择该角色的代表句 take")
         with self.connection() as connection:
             lines = connection.execute(
                 "SELECT * FROM script_lines WHERE archived=0 AND speaker=? ORDER BY order_index,id",
@@ -671,19 +792,30 @@ class ProjectStore:
             voice = connection.execute(
                 "SELECT * FROM voice_profiles WHERE id=?", (voice_id,)
             ).fetchone()
-            take = connection.execute("SELECT * FROM takes WHERE id=?", (take_id,)).fetchone()
-            if voice is None or take is None:
-                raise WorkerProtocolError("音色档案或代表句 take 不存在")
-            line_by_id = {str(line["id"]): line for line in lines}
-            if str(take["line_id"]) not in line_by_id:
-                raise WorkerProtocolError("代表句 take 不属于该角色")
-            if str(take["voice_profile_id"] or "") != voice_id:
-                raise WorkerProtocolError("代表句 take 不是由当前映射音色生成")
-            if str(take["created_at"]) < str(voice["updated_at"]):
-                raise WorkerProtocolError("音色参考已更新，请重新生成代表句后再确认")
-            if str(take["status"]) == "rejected":
-                raise WorkerProtocolError("已拒绝的 take 不能用于选角确认")
-            self._adopt_take_in_connection(connection, take_id)
+            if voice is None:
+                raise WorkerProtocolError("映射的音色档案不存在")
+            readiness = self.voice_profile_readiness(voice_id, verify_hash=True)
+            if not readiness["ready"]:
+                raise WorkerProtocolError(
+                    f"声音“{readiness['name']}”尚未准备好："
+                    + "；".join(readiness["issues"])
+                )
+            representative_line_id = str(lines[0]["id"])
+            if take_id:
+                take = connection.execute("SELECT * FROM takes WHERE id=?", (take_id,)).fetchone()
+                if take is None:
+                    raise WorkerProtocolError("所选代表句不存在")
+                line_by_id = {str(line["id"]): line for line in lines}
+                if str(take["line_id"]) not in line_by_id:
+                    raise WorkerProtocolError("代表句不属于该角色")
+                if str(take["voice_profile_id"] or "") != voice_id:
+                    raise WorkerProtocolError("代表句不是由当前映射声音生成")
+                if str(take["created_at"]) < str(voice["updated_at"]):
+                    raise WorkerProtocolError("声音参考已更新，请重新生成代表句后再使用该试听版本")
+                if str(take["status"]) == "rejected":
+                    raise WorkerProtocolError("已拒绝的代表句不能用于选角确认")
+                self._adopt_take_in_connection(connection, take_id)
+                representative_line_id = str(take["line_id"])
             signature = _casting_voice_signature(voice)
             connection.execute(
                 """
@@ -703,14 +835,19 @@ class ProjectStore:
                     role,
                     voice_id,
                     signature,
-                    str(take["line_id"]),
-                    take_id,
+                    representative_line_id,
+                    take_id or None,
                     str(notes)[:2_000],
                     now,
                     now,
                 ),
             )
-        self._touch("casting_role", role, "confirmed", {"take_id": take_id})
+        self._touch(
+            "casting_role",
+            role,
+            "confirmed",
+            {"take_id": take_id or None, "confirmation_basis": "voice_selection"},
+        )
         return next(value for value in self.list_casting_roles() if value["speaker"] == role)
 
     def replace_script_lines(self, lines: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -945,6 +1082,10 @@ class ProjectStore:
                     (status, revision_id, now, line_id),
                 )
                 restored.append(line_id)
+            # Archived clips keep their old sequence value.  After the active
+            # timeline has been reordered that value may collide with another
+            # clip; normalize inside the same transaction before exposing it.
+            _normalize_timeline_sequence(connection)
             after_rows = connection.execute(
                 "SELECT * FROM script_lines WHERE archived=0 ORDER BY order_index,id"
             ).fetchall()
@@ -1545,6 +1686,9 @@ class ProjectStore:
     ) -> list[dict[str, Any]]:
         requested = [str(value) for value in (line_ids or []) if str(value)]
         with self.connection() as connection:
+            # The active-job check and insert must be one serialized decision;
+            # HTTP requests can arrive concurrently even when the UI is guarded.
+            connection.execute("BEGIN IMMEDIATE")
             if requested:
                 placeholders = ",".join("?" for _ in requested)
                 rows = connection.execute(
@@ -1570,6 +1714,14 @@ class ProjectStore:
             ]
             jobs: list[dict[str, Any]] = []
             for priority, line in enumerate(rows):
+                existing_active = connection.execute(
+                    "SELECT id FROM jobs WHERE line_id=? "
+                    "AND status IN ('queued','validating','running','interrupted') "
+                    "ORDER BY updated_at DESC,created_at DESC LIMIT 1",
+                    (line["id"],),
+                ).fetchone()
+                if existing_active is not None:
+                    continue
                 current_locked = False
                 if line["current_take_id"]:
                     take_lock = connection.execute(
@@ -1655,6 +1807,31 @@ class ProjectStore:
             row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if row is None:
             raise WorkerProtocolError(f"任务不存在：{job_id}")
+        return _job_dict(row)
+
+    def claim_queued_job(self, job_id: str) -> dict[str, Any] | None:
+        """Atomically move one queued job into validation, or return ``None``."""
+        target = str(job_id or "").strip()
+        if not target:
+            raise WorkerProtocolError("缺少要领取的任务")
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE jobs SET status='validating',stage='generate',error='',updated_at=? "
+                "WHERE id=? AND status='queued'",
+                (now, target),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = connection.execute("SELECT * FROM jobs WHERE id=?", (target,)).fetchone()
+            if row is None:
+                raise WorkerProtocolError(f"任务不存在：{target}")
+            if row["line_id"]:
+                connection.execute(
+                    "UPDATE script_lines SET status='validating',updated_at=? WHERE id=?",
+                    (now, row["line_id"]),
+                )
         return _job_dict(row)
 
     def set_job_priority(self, job_id: str, priority: int) -> dict[str, Any]:
@@ -1954,7 +2131,7 @@ class ProjectStore:
         now = utc_now()
         row = connection.execute(
             """
-            SELECT t.*,l.speaker,l.target_start,l.archived
+            SELECT t.*,l.speaker,l.target_start,l.order_index,l.archived
             FROM takes AS t JOIN script_lines AS l ON l.id=t.line_id
             WHERE t.id=?
             """,
@@ -1996,6 +2173,16 @@ class ProjectStore:
         quality = _read_json(row["quality_json"], {})
         signal = quality.get("signal") if isinstance(quality.get("signal"), dict) else {}
         duration = max(0.0, float(signal.get("duration_seconds") or 0.0))
+        creating_clip = current_clip is None
+        insertion_index = (
+            _prepare_timeline_insertion(
+                connection,
+                line_id=line_id,
+                line_order=int(row["order_index"] or 0),
+            )
+            if creating_clip
+            else None
+        )
         if timeline_clip is not None:
             clip = dict(timeline_clip)
             clip["line_id"] = line_id
@@ -2011,19 +2198,26 @@ class ProjectStore:
                 "line_id": line_id,
                 "take_id": take_id,
                 "track": str(row["speaker"] or "dialogue"),
+                "sequence_index": insertion_index,
                 "position": float(row["target_start"] or 0.0),
                 "duration": duration,
             }
+        if insertion_index is not None:
+            # Insert a newly adopted middle line beside its nearest script-order
+            # neighbour without disturbing custom ordering already made by the user.
+            clip["sequence_index"] = insertion_index
+        elif "sequence_index" not in clip:
+            clip["sequence_index"] = int(row["order_index"] or 0)
         fields = _timeline_clip_fields(clip)
         connection.execute(
             """
             INSERT INTO timeline_clips(
-                id,line_id,take_id,track,position,duration,in_offset,out_offset,
+                id,line_id,take_id,track,sequence_index,position,duration,in_offset,out_offset,
                 gain_db,fade_in,fade_out,muted,version,updated_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
                 line_id=excluded.line_id,take_id=excluded.take_id,track=excluded.track,
-                position=excluded.position,duration=excluded.duration,
+                sequence_index=excluded.sequence_index,position=excluded.position,duration=excluded.duration,
                 in_offset=excluded.in_offset,out_offset=excluded.out_offset,
                 gain_db=excluded.gain_db,fade_in=excluded.fade_in,
                 fade_out=excluded.fade_out,muted=excluded.muted,
@@ -2031,6 +2225,7 @@ class ProjectStore:
             """,
             fields,
         )
+        _normalize_timeline_sequence(connection)
         updated = connection.execute("SELECT * FROM takes WHERE id=?", (take_id,)).fetchone()
         if updated is None:
             raise WorkerProtocolError(f"take 采用失败：{take_id}")
@@ -2339,28 +2534,45 @@ class ProjectStore:
             raise WorkerProtocolError("没有可保存的时间线片段")
         if len(items) > 500:
             raise WorkerProtocolError("单次最多保存 500 个时间线片段")
-        normalized = [_timeline_clip_fields(value) for value in items]
-        results: list[dict[str, Any]] = []
+        result_ids: list[str] = []
         with self.connection() as connection:
-            for fields in normalized:
+            for item in items:
+                line_id = str(item.get("line_id") or "").strip()
+                take_id = str(item.get("take_id") or "").strip()
+                if not line_id or not take_id:
+                    raise WorkerProtocolError("时间轴片段缺少 line_id/take_id")
                 line = connection.execute(
-                    "SELECT current_take_id,archived FROM script_lines WHERE id=?", (fields[1],)
+                    "SELECT current_take_id,archived,order_index FROM script_lines WHERE id=?",
+                    (line_id,),
                 ).fetchone()
                 if line is None or bool(line["archived"]):
-                    raise WorkerProtocolError(f"时间轴台词不存在或已归档：{fields[1]}")
-                if str(line["current_take_id"] or "") != str(fields[2]):
+                    raise WorkerProtocolError(f"时间轴台词不存在或已归档：{line_id}")
+                if str(line["current_take_id"] or "") != take_id:
                     raise WorkerProtocolError(
                         "时间轴只能使用该句已采用的 take；请先通过 takes/adopt 原子切换版本"
                     )
+                if "sequence_index" not in item:
+                    existing = None
+                    if item.get("id"):
+                        existing = connection.execute(
+                            "SELECT sequence_index FROM timeline_clips WHERE id=?",
+                            (str(item["id"]),),
+                        ).fetchone()
+                    item["sequence_index"] = (
+                        int(existing["sequence_index"])
+                        if existing is not None
+                        else int(line["order_index"] or 0)
+                    )
+                fields = _timeline_clip_fields(item)
                 connection.execute(
                     """
                     INSERT INTO timeline_clips(
-                        id,line_id,take_id,track,position,duration,in_offset,out_offset,
+                        id,line_id,take_id,track,sequence_index,position,duration,in_offset,out_offset,
                         gain_db,fade_in,fade_out,muted,version,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET
                         line_id=excluded.line_id,take_id=excluded.take_id,track=excluded.track,
-                        position=excluded.position,duration=excluded.duration,
+                        sequence_index=excluded.sequence_index,position=excluded.position,duration=excluded.duration,
                         in_offset=excluded.in_offset,out_offset=excluded.out_offset,
                         gain_db=excluded.gain_db,fade_in=excluded.fade_in,
                         fade_out=excluded.fade_out,muted=excluded.muted,
@@ -2368,11 +2580,15 @@ class ProjectStore:
                     """,
                     fields,
                 )
+                result_ids.append(str(fields[0]))
+            _normalize_timeline_sequence(connection)
+            results = []
+            for clip_id in result_ids:
                 row = connection.execute(
-                    "SELECT * FROM timeline_clips WHERE id=?", (fields[0],)
+                    "SELECT * FROM timeline_clips WHERE id=?", (clip_id,)
                 ).fetchone()
                 if row is None:
-                    raise WorkerProtocolError(f"时间轴片段保存失败：{fields[0]}")
+                    raise WorkerProtocolError(f"时间轴片段保存失败：{clip_id}")
                 results.append(dict(row))
         self._touch(
             "timeline_clip",
@@ -2402,6 +2618,7 @@ class ProjectStore:
                 f"DELETE FROM timeline_clips WHERE id IN ({placeholders})",
                 ids,
             )
+            _normalize_timeline_sequence(connection)
         deleted = [dict(row) for row in rows]
         self._touch(
             "timeline_clip",
@@ -2418,7 +2635,7 @@ class ProjectStore:
                 SELECT c.* FROM timeline_clips AS c
                 JOIN script_lines AS l ON l.id=c.line_id
                 WHERE l.archived=0
-                ORDER BY c.position,c.track,c.id
+                ORDER BY c.sequence_index,l.order_index,c.id
                 """
             ).fetchall()
         return [dict(row) for row in rows]
@@ -2529,7 +2746,7 @@ class ProjectStore:
                 JOIN takes AS t ON t.id=c.take_id
                 JOIN script_lines AS l ON l.id=c.line_id
                 WHERE l.archived=0
-                ORDER BY c.position,c.track,c.id
+                ORDER BY c.sequence_index,l.order_index,c.id
                 """
             ).fetchall()
         values: list[dict[str, Any]] = []
@@ -2985,6 +3202,7 @@ def _initialize_schema(connection: sqlite3.Connection) -> None:
             line_id TEXT NOT NULL,
             take_id TEXT NOT NULL,
             track TEXT NOT NULL DEFAULT 'dialogue',
+            sequence_index INTEGER NOT NULL DEFAULT 0,
             position REAL NOT NULL DEFAULT 0,
             duration REAL NOT NULL DEFAULT 0,
             in_offset REAL NOT NULL DEFAULT 0,
@@ -3051,13 +3269,17 @@ def _initialize_schema(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_script_source ON script_lines(source_key)"
     )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_timeline_sequence "
+        "ON timeline_clips(sequence_index,position)"
+    )
 
 
 def _ensure_schema_columns(connection: sqlite3.Connection) -> None:
     """Add compatibility columns when opening an older project before bumping its schema."""
     table_columns = {
         table: {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
-        for table in ("script_lines", "renders", "takes", "production_clips")
+        for table in ("script_lines", "renders", "takes", "production_clips", "timeline_clips")
     }
     for name, declaration in (
         ("archived", "INTEGER NOT NULL DEFAULT 0"),
@@ -3083,10 +3305,87 @@ def _ensure_schema_columns(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE production_clips ADD COLUMN fill_gaps INTEGER NOT NULL DEFAULT 0"
         )
+    if "sequence_index" not in table_columns["timeline_clips"]:
+        connection.execute(
+            "ALTER TABLE timeline_clips ADD COLUMN sequence_index INTEGER NOT NULL DEFAULT 0"
+        )
+        connection.execute(
+            "UPDATE timeline_clips SET sequence_index=COALESCE((SELECT order_index FROM script_lines "
+            "WHERE script_lines.id=timeline_clips.line_id),0)"
+        )
+    _normalize_timeline_sequence(connection)
     connection.execute(
         "UPDATE takes SET voice_profile_id=(SELECT voice_profile_id FROM script_lines "
         "WHERE script_lines.id=takes.line_id) WHERE voice_profile_id IS NULL"
     )
+
+
+def _ordered_timeline_rows(connection: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return editing order without allowing track time to act as a tie-breaker."""
+    return connection.execute(
+        """
+        SELECT c.id,c.line_id,c.sequence_index,l.order_index
+        FROM timeline_clips AS c
+        JOIN script_lines AS l ON l.id=c.line_id
+        WHERE l.archived=0
+        ORDER BY c.sequence_index,l.order_index,c.id
+        """
+    ).fetchall()
+
+
+def _normalize_timeline_sequence(connection: sqlite3.Connection) -> None:
+    """Repair duplicate/gapped legacy sequence values into one dense stable order."""
+    for index, row in enumerate(_ordered_timeline_rows(connection)):
+        if int(row["sequence_index"] or 0) != index:
+            connection.execute(
+                "UPDATE timeline_clips SET sequence_index=? WHERE id=?",
+                (index, str(row["id"])),
+            )
+
+
+def _prepare_timeline_insertion(
+    connection: sqlite3.Connection,
+    *,
+    line_id: str,
+    line_order: int,
+) -> int:
+    """Open one sequence slot for a newly adopted line while preserving custom order."""
+    rows = [row for row in _ordered_timeline_rows(connection) if str(row["line_id"]) != line_id]
+    prior_orders = [
+        int(row["order_index"] or 0)
+        for row in rows
+        if int(row["order_index"] or 0) < line_order
+    ]
+    if prior_orders:
+        nearest_prior = max(prior_orders)
+        insertion_index = max(
+            index
+            for index, row in enumerate(rows)
+            if int(row["order_index"] or 0) == nearest_prior
+        ) + 1
+    else:
+        following_orders = [
+            int(row["order_index"] or 0)
+            for row in rows
+            if int(row["order_index"] or 0) > line_order
+        ]
+        if following_orders:
+            nearest_following = min(following_orders)
+            insertion_index = min(
+                index
+                for index, row in enumerate(rows)
+                if int(row["order_index"] or 0) == nearest_following
+            )
+        else:
+            insertion_index = len(rows)
+    for index, existing in enumerate(rows):
+        shifted_index = index if index < insertion_index else index + 1
+        if int(existing["sequence_index"] or 0) != shifted_index:
+            connection.execute(
+                "UPDATE timeline_clips SET sequence_index=? WHERE id=?",
+                (shifted_index, str(existing["id"])),
+            )
+    return insertion_index
 
 
 def _normalize_line(index: int, value: dict[str, Any]) -> dict[str, Any]:
@@ -3211,6 +3510,7 @@ def _timeline_clip_fields(value: dict[str, Any]) -> tuple[Any, ...]:
         line_id,
         take_id,
         str(value.get("track") or "dialogue")[:80],
+        max(0, min(1_000_000, int(value.get("sequence_index") or 0))),
         max(0.0, float(value.get("position") or 0.0)),
         duration,
         in_offset,

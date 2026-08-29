@@ -1,4 +1,15 @@
-# comfyui-fireredaudio-T8
+# comfyui-fireredaudio-T8 v0.19.0
+
+最简单的安装方法：
+
+```powershell
+cd ComfyUI\custom_nodes
+git clone https://github.com/T8mars/comfyui-fireredaudio-T8.git
+cd comfyui-fireredaudio-T8
+python scripts\setup_runtime.py
+```
+
+然后把推荐模型 [`int8-wo-safe-v1`](https://huggingface.co/t8star/Firered-Audio-Comfy/tree/int8-wo-safe-v1) 放到 `ComfyUI/models/TTS/FireRedAudio/`。节点使用独立 Worker，不会修改 ComfyUI 自己的 Transformers。
 
 FireRedAudio 的 45 个 ComfyUI V3 全能力节点，由 **T8star-Aix** 集成。节点菜单：
 
@@ -95,6 +106,15 @@ v0.7 起，同一 Worker 中重复使用相同参考音频会命中 CPU LRU 条�
 
 仓库保留官方目录结构并固定不可变 revision；同一份下载目录可以在桌面版中直接选择，也可以放入 ComfyUI 的默认扫描目录。
 
+模型加载器同时识别桌面转换工具生成的本地 `fireredaudio-model.json`：
+
+- `bf16-slim`：主模型保持 BF16，RedAE 只保留推理 decoder，音质无损且节省约 6.4 GiB 磁盘；
+- `int8-wo-safe`：TorchAO 权重 INT8，仅量化 Qwen block Linear，作为推荐的稳定省显存格式；
+- `int8-wo-extended`：扩大到音频模块，体积更小但听感变化明显，保持实验标记；
+- `int8-convrot-experimental`：Comfy-Kitchen ConvRot INT8，Windows 会在 CUDA 扩展不兼容时明确使用 Triton/eager，保持实验标记。
+
+本地清单会覆盖官方 BF16 文件清单参与大小校验和模型指纹计算，因此 slim decoder 与量化分片不会被误报为损坏。TorchAO/Comfy-Kitchen 仍只安装在隔离 Worker，不污染 ComfyUI 宿主环境。GGUF 不在支持范围内。
+
 默认扫描：
 
 ```text
@@ -104,7 +124,8 @@ ComfyUI/models/TTS/FireRedAudio/
     model-00001-of-00005.safetensors
     ...
   RedAE_decoder/
-    model.pt
+    model.pt                 # 官方原始包
+    model.safetensors        # bf16-slim / INT8 包优先使用
 ```
 
 Lite 仅下载主模型，支持 ASR/理解；Full 增加 RedAE decoder，支持生成和编辑：
