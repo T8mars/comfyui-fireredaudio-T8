@@ -27,18 +27,19 @@ jobs:
           script: |
             const fs = require('fs');
             const report = JSON.parse(fs.readFileSync('upstream-report.json', 'utf8'));
-            if (!report.updates_available) {
-              core.info('Pinned FireRedAudio code and model revisions are current.');
+            if (!report.audit_required) {
+              core.info('No unaudited code/model revision changes; runtime pins are unchanged.');
               return;
             }
             const title = '[upstream-watch] FireRedAudio revision compatibility audit';
             const body = [
               'Upstream revisions changed. This is an audit reminder, not an automatic upgrade.',
               '',
-              `- Code: \`${report.code.pinned}\` → \`${report.code.latest}\` (${report.code.changed ? 'changed' : 'unchanged'})`,
-              `- Model: \`${report.model.pinned}\` → \`${report.model.latest}\` (${report.model.changed ? 'changed' : 'unchanged'})`,
+              `- Code: pinned \`${report.code.pinned}\`; last audited \`${report.code.audited || 'none'}\`; latest \`${report.code.latest}\` (${report.code.audit_required ? 'audit required' : 'current or already reviewed'})`,
+              `- Model: pinned \`${report.model.pinned}\`; last audited \`${report.model.audited || 'none'}\`; latest \`${report.model.latest}\` (${report.model.audit_required ? 'audit required' : 'current or already reviewed'})`,
               '',
-              `Code diff: ${report.code.compare_url}`,
+              `Code changes since last audit: ${report.code.audit_compare_url}`,
+              `Code changes from runtime pin: ${report.code.compare_url}`,
               `Model commits: ${report.model.commits_url}`,
               '',
               'Before changing the pinned manifest, run schema, host-compatibility and real-model smoke validation.'

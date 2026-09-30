@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -13,6 +14,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "manifests" / "model_firered_audio.json"
+DEFAULT_AUDIT = ROOT / "manifests" / "upstream_audit.json"
 
 
 def load_pins(path: str | Path = DEFAULT_MANIFEST) -> dict[str, str]:
@@ -24,17 +26,66 @@ def load_pins(path: str | Path = DEFAULT_MANIFEST) -> dict[str, str]:
     return {key: str(payload[key]).strip() for key in required}
 
 
-def compare_revisions(pins: dict[str, str], latest_code: str, latest_model: str) -> dict[str, Any]:
+def load_audit(path: str | Path = DEFAULT_AUDIT) -> dict[str, Any]:
+    """A missing optional baseline never suppresses an update notification."""
+    source = Path(path)
+    if not source.exists():
+        return {}
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("schemaVersion") != 1:
+        raise ValueError("上游审计记录需要 schemaVersion=1")
+    for name in ("code", "model"):
+        entry = payload.get(name)
+        if not isinstance(entry, dict) or entry.get("decision") != "retain_pin":
+            raise ValueError(f"上游审计记录 {name} 缺少 retain_pin 决策")
+        for key in ("repository", "reason", "evidence"):
+            if not isinstance(entry.get(key), str) or not entry[key].strip():
+                raise ValueError(f"上游审计记录 {name} 缺少 {key}")
+        for key in ("pinnedRevision", "auditedRevision"):
+            if not isinstance(entry.get(key), str) or not re.fullmatch(r"[0-9a-f]{40}", entry[key]):
+                raise ValueError(f"上游审计记录 {name}.{key} 必须为完整 commit SHA")
+    return payload
+
+
+def compare_revisions(
+    pins: dict[str, str], latest_code: str, latest_model: str,
+    audit: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    def reviewed_revision(name: str) -> str | None:
+        entry = (audit or {}).get(name, {})
+        # An acknowledgement applies only to the exact repository and runtime pin
+        # that was reviewed. Changing either must require a fresh audit.
+        if (entry.get("decision") == "retain_pin"
+                and entry.get("repository") == pins[f"{name}Repository"]
+                and entry.get("pinnedRevision") == pins[f"{name}Revision"]):
+            return entry.get("auditedRevision")
+        return None
+
+    code_audited = reviewed_revision("code")
+    model_audited = reviewed_revision("model")
     code_changed = latest_code.strip() != pins["codeRevision"]
     model_changed = latest_model.strip() != pins["modelRevision"]
+    code_needs_audit = code_changed and latest_code.strip() != code_audited
+    model_needs_audit = model_changed and latest_model.strip() != model_audited
+    audit_required = code_needs_audit or model_needs_audit
+    updates_available = code_changed or model_changed
     return {
-        "status": "update_available" if code_changed or model_changed else "current",
-        "updates_available": code_changed or model_changed,
+        "status": "update_available" if audit_required else "audited" if updates_available else "current",
+        # Preserve this field and --fail-on-update: pins may still differ from
+        # upstream even when that exact difference has already been reviewed.
+        "updates_available": updates_available,
+        "audit_required": audit_required,
         "code": {
             "repository": pins["codeRepository"],
             "pinned": pins["codeRevision"],
             "latest": latest_code.strip(),
             "changed": code_changed,
+            "audited": code_audited,
+            "audit_required": code_needs_audit,
+            "audit_compare_url": (
+                f"https://github.com/{pins['codeRepository']}/compare/"
+                f"{code_audited or pins['codeRevision']}...{latest_code.strip()}"
+            ),
             "compare_url": (
                 f"https://github.com/{pins['codeRepository']}/compare/"
                 f"{pins['codeRevision']}...{latest_code.strip()}"
@@ -45,6 +96,8 @@ def compare_revisions(pins: dict[str, str], latest_code: str, latest_model: str)
             "pinned": pins["modelRevision"],
             "latest": latest_model.strip(),
             "changed": model_changed,
+            "audited": model_audited,
+            "audit_required": model_needs_audit,
             "commits_url": f"https://huggingface.co/{pins['modelRepository']}/commits/main",
         },
     }
@@ -84,17 +137,19 @@ def _get_json(url: str, headers: dict[str, str]) -> Any:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check pinned FireRedAudio code/model revisions")
     parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
+    parser.add_argument("--audit", default=str(DEFAULT_AUDIT), help="reviewed revisions; does not change runtime pins")
     parser.add_argument("--output", default="")
     parser.add_argument("--github-sha", default="", help="offline/test override")
     parser.add_argument("--model-sha", default="", help="offline/test override")
     parser.add_argument("--fail-on-update", action="store_true")
     args = parser.parse_args()
     pins = load_pins(args.manifest)
+    audit = load_audit(args.audit)
     latest_code = args.github_sha or fetch_latest_code(
         pins["codeRepository"], os.environ.get("GITHUB_TOKEN", "")
     )
     latest_model = args.model_sha or fetch_latest_model(pins["modelRepository"])
-    report = compare_revisions(pins, latest_code, latest_model)
+    report = compare_revisions(pins, latest_code, latest_model, audit)
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     print(rendered)
     if args.output:

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "auditedAt": "2026-09-30",
+  "code": {
+    "repository": "FireRedTeam/FireRedAudio",
+    "pinnedRevision": "88b826378023eb9a49b297214568398a300e5c32",
+    "auditedRevision": "4bf612ee3d97fc7ea82be9fddd4fb87771732ea9",
+    "decision": "retain_pin",
+    "reason": "Only README.md, the independent Gradio app.py, and two assets changed; bundled inference/model code is unaffected.",
+    "evidence": "https://github.com/FireRedTeam/FireRedAudio/compare/88b826378023eb9a49b297214568398a300e5c32...4bf612ee3d97fc7ea82be9fddd4fb87771732ea9"
+  },
+  "model": {
+    "repository": "t8star/Firered-Audio-Comfy",
+    "pinnedRevision": "ffd450cf336a929f4ceb1eaaff4c7ba4e4af34bb",
+    "auditedRevision": "63effcaa9aa63a02bdfde1667c27866430d29b74",
+    "decision": "retain_pin",
+    "reason": "Recursive file trees at both revisions contain the same 13 files; only README.md differs. All weight LFS OIDs, configurations, tokenizer OIDs, and file sizes are unchanged.",
+    "evidence": "https://huggingface.co/t8star/Firered-Audio-Comfy/commits/main"
+  }
+}
